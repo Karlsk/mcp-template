@@ -16,6 +16,23 @@ from app.server import build_server
 from app.settings import RetrySettings, SdnSettings, Settings
 
 
+@pytest.fixture(autouse=True)
+def _isolate_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep Settings deterministic: ignore the developer's .env and shell env.
+
+    YAML loading (SDN_CONFIG_FILE) and explicit per-test monkeypatch.setenv still
+    work; only the dotenv source and pre-set SDN_CONTROLLER_* env are neutralized.
+    """
+    Settings.model_config["env_file"] = None
+    for var in (
+        "SDN_CONTROLLER_BASE_URL",
+        "SDN_CONTROLLER_USERNAME",
+        "SDN_CONTROLLER_PASSWORD",
+        "SDN_CONTROLLER_TOKEN",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def make_sdn_settings(base_url: str = "") -> SdnSettings:
     return SdnSettings(
         base_url=base_url,
@@ -28,12 +45,13 @@ def make_sdn_settings(base_url: str = "") -> SdnSettings:
 
 @pytest.fixture
 def unconfigured_settings() -> Settings:
-    return Settings(sdn=make_sdn_settings(""), sdn_token=SecretStr("tok"))
+    return Settings(sdn=make_sdn_settings(""), sdn_controller_token=SecretStr("tok"))
 
 
 @pytest.fixture
 def configured_settings() -> Settings:
-    return Settings(sdn=make_sdn_settings("https://sdn.example"), sdn_token=SecretStr("tok"))
+    sdn = make_sdn_settings("https://sdn.example")
+    return Settings(sdn=sdn, sdn_controller_token=SecretStr("tok"))
 
 
 def status_transport(status: int) -> httpx.MockTransport:

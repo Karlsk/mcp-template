@@ -44,6 +44,9 @@ def _make_lifespan(
     async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, SDNClient]]:
         client = factory()
         try:
+            # basic mode: fetch the first token (fail-fast at startup if the
+            # controller is unreachable or rejects credentials). no-auth/bearer: no-op.
+            await client.initialize()
             yield {"sdn_client": client}
         finally:
             await client.aclose()

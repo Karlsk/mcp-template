@@ -1,19 +1,22 @@
 # SDN controller API configuration (NON-SECRET).
-# Secrets (tokens/passwords) are loaded from environment / .env, NOT here.
+# Secrets (passwords/tokens) are loaded from environment / .env (SDN_CONTROLLER_*),
+# never here. base_url comes from SDN_CONTROLLER_BASE_URL (env); leave it empty below.
 
-# Base URL of the SDN controller REST API. Empty string = not configured
-# (server runs in "skeleton mode"; SDN tools report configured=false).
 sdn:
-  base_url: ""
-  auth_type: "no-auth"   # one of: no-auth | bearer | basic
-  timeout: 30.0          # per-request timeout in seconds
+  base_url: ""              # overridden by SDN_CONTROLLER_BASE_URL at runtime
+  # no-auth | bearer (固定 api-key via SDN_CONTROLLER_TOKEN) | basic (POST {username,password,device_id} 登录换 token，401 自动刷新)
+  auth_type: "basic"
+  timeout: 30.0
+  ssl_verify: false         # the controller serves a self-signed certificate
   retry:
     max_retries: 3
     base_delay: 1.0
     max_delay: 30.0
-  # Named controller endpoints. Add/remove as the real controller requires.
-  # Consumed by app/sdn/client.py when wiring real GET tools.
+  # Named controller endpoints. Add business endpoints as the controller requires.
   endpoints:
     health: "/"
     devices: "/devices"
     topology: "/topology"
+    login: "/oauth/token"   # auth_type=basic: POSTed with {username,password,device_id} to obtain/refresh the token
+  # auth_type=basic only: JSON key holding the bearer token in the login response.
+  token_field: "access_token"

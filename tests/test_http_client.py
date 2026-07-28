@@ -253,3 +253,68 @@ async def test_method_wrappers_send_correct_verb(method: str, call) -> None:
     finally:
         await client.close()
     assert seen == [method.upper()]
+
+
+async def test_bearer_token_property_returns_configured_token() -> None:
+    """bearer_token exposes the configured token without sending a request."""
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(lambda _r: httpx.Response(200)),
+            auth=AuthConfig(auth_type="bearer", bearer_token="cfg-token"),
+        )
+    )
+    try:
+        assert client.bearer_token == "cfg-token"
+    finally:
+        await client.close()
+
+
+async def test_set_bearer_token_rotates_header_on_live_client() -> None:
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.headers.get("authorization", ""))
+        return httpx.Response(200)
+
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(handler),
+            auth=AuthConfig(auth_type="bearer", bearer_token="old"),
+        )
+    )
+    try:
+        await client.set_bearer_token("new")
+        assert client.bearer_token == "new"
+        await client.get("/x")
+    finally:
+        await client.close()
+    assert captured == ["Bearer new"]
+
+
+async def test_set_bearer_token_empty_removes_header() -> None:
+    sent_auth: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent_auth.append("authorization" in request.headers)
+        return httpx.Response(200)
+
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(handler),
+            auth=AuthConfig(auth_type="bearer", bearer_token="old"),
+        )
+    )
+    try:
+        await client.set_bearer_token("")
+        await client.get("/x")
+    finally:
+        await client.close()
+    assert sent_auth == [False]
+
+
+def test_is_retriable_returns_false_for_unrelated_exception() -> None:
+    """A non-transport, non-HTTP-status exception is never retried."""
+    assert HttpClient._is_retriable(ValueError("not an httpx error")) is False

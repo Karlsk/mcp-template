@@ -27,25 +27,28 @@ def test_env_overrides_mcp_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_secret_loaded_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SDN_TOKEN", "super-secret")
+    monkeypatch.setenv("SDN_CONTROLLER_TOKEN", "super-secret")
     settings = Settings()
-    assert settings.sdn_token is not None
-    assert settings.sdn_token.get_secret_value() == "super-secret"
+    assert settings.sdn_controller_token is not None
+    assert settings.sdn_controller_token.get_secret_value() == "super-secret"
 
 
 def test_secret_is_not_leaked_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SDN_TOKEN", "super-secret")
+    monkeypatch.setenv("SDN_CONTROLLER_TOKEN", "super-secret")
     settings = Settings()
     assert "super-secret" not in repr(settings)
-    assert "super-secret" not in str(settings.sdn_token)
+    assert "super-secret" not in str(settings.sdn_controller_token)
 
 
 def test_yaml_loads_sdn_structure() -> None:
     """The committed config/sdn_controller.yaml populates the nested sdn block."""
     settings = Settings()
     assert settings.sdn.timeout == 30.0
-    assert settings.sdn.auth_type == "no-auth"
+    assert settings.sdn.auth_type == "basic"
+    assert settings.sdn.ssl_verify is False
+    assert settings.sdn.endpoints.get("login") == "/oauth/token"
     assert settings.sdn.endpoints.get("devices") == "/devices"
+    assert settings.sdn.token_field == "access_token"
     assert settings.sdn.retry.max_retries == 3
 
 
@@ -66,6 +69,23 @@ def test_sdn_is_configured_true_when_base_url_set(
     assert settings.sdn_is_configured() is True
 
 
+def test_base_url_env_overrides_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SDN_CONTROLLER_BASE_URL (env) wins over the YAML base_url."""
+    monkeypatch.setenv("SDN_CONTROLLER_BASE_URL", "https://from-env.example")
+    settings = Settings()
+    assert settings.sdn_base_url == "https://from-env.example"
+    assert settings.sdn_is_configured() is True
+
+
+def test_base_url_falls_back_to_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without the env override, base_url comes from the YAML."""
+    config = tmp_path / "cfg.yaml"
+    config.write_text("sdn:\n  base_url: 'https://from-yaml.example'\n")
+    monkeypatch.setenv("SDN_CONFIG_FILE", str(config))
+    settings = Settings()
+    assert settings.sdn_base_url == "https://from-yaml.example"
+
+
 def test_dns_rebinding_protection_disabled_by_default() -> None:
     """Protection must default OFF so GUI clients (Cherry Studio/Cursor) connect."""
     assert Settings().mcp_dns_rebinding_protection is False
@@ -74,7 +94,7 @@ def test_dns_rebinding_protection_disabled_by_default() -> None:
 def test_yaml_rejects_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A secret key in YAML must be refused at load time."""
     config = tmp_path / "cfg.yaml"
-    config.write_text("sdn_token: 'should-not-be-here'\n")
+    config.write_text("sdn_controller_token: 'should-not-be-here'\n")
     monkeypatch.setenv("SDN_CONFIG_FILE", str(config))
     with pytest.raises(ValueError, match="Refusing to load secret"):
         Settings()

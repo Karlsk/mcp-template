@@ -94,6 +94,25 @@ class HttpClient:
             headers["Authorization"] = f"Bearer {self._config.auth.bearer_token}"
         return headers
 
+    @property
+    def bearer_token(self) -> str:
+        """The currently configured bearer token (empty when bearer auth is unused/unset)."""
+        return self._config.auth.bearer_token
+
+    async def set_bearer_token(self, token: str) -> None:
+        """Rotate the bearer token on the live client without rebuilding it.
+
+        Updates the stored config (so a later lazy rebuild preserves the new
+        token) and the live client's headers. Generic primitive only — it holds
+        no refresh policy; the caller decides *when* to rotate.
+        """
+        self._config.auth.bearer_token = token
+        client = await self._get_client()
+        if token:
+            client.headers["Authorization"] = f"Bearer {token}"
+        else:
+            client.headers.pop("Authorization", None)
+
     @staticmethod
     def _is_retriable(exc: Exception | None) -> bool:
         """Decide whether an exception is worth retrying.

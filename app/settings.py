@@ -32,7 +32,9 @@ from pydantic_settings import (
 DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "sdn_controller.yaml"
 
 # Secret fields that must NEVER be loaded from YAML (env / .env only).
-_FORBIDDEN_YAML_KEYS = frozenset({"sdn_token", "sdn_username", "sdn_password"})
+_FORBIDDEN_YAML_KEYS = frozenset(
+    {"sdn_controller_token", "sdn_controller_username", "sdn_controller_password"}
+)
 
 
 class RetrySettings(BaseModel):
@@ -51,6 +53,10 @@ class SdnSettings(BaseModel):
     timeout: float = 30.0
     retry: RetrySettings = Field(default_factory=RetrySettings)
     endpoints: dict[str, str] = Field(default_factory=dict)
+    # TLS verification: set false for controllers with self-signed certificates.
+    ssl_verify: bool = True
+    # JSON key holding the bearer token in the login response (auth_type=basic).
+    token_field: str = "access_token"
 
 
 class Settings(BaseSettings):
@@ -71,17 +77,25 @@ class Settings(BaseSettings):
     # =true when serving behind a reverse proxy / on a public interface.
     mcp_dns_rebinding_protection: bool = False
 
-    # ---- SDN secrets (env / .env only) ----
-    sdn_token: SecretStr | None = None
-    sdn_username: str | None = None
-    sdn_password: SecretStr | None = None
+    # ---- SDN controller connection (env / .env) ----
+    # base_url is env-driven so one image runs against lab/prod controllers.
+    sdn_controller_base_url: str | None = None
+    # Secrets (env / .env only — never in YAML).
+    sdn_controller_username: str | None = None
+    sdn_controller_password: SecretStr | None = None
+    sdn_controller_token: SecretStr | None = None  # bearer mode (fixed api-key)
 
     # ---- SDN non-secret structure (YAML) ----
     sdn: SdnSettings = Field(default_factory=SdnSettings)
 
+    @property
+    def sdn_base_url(self) -> str:
+        """Effective controller base URL — env override wins over the YAML value."""
+        return self.sdn_controller_base_url or self.sdn.base_url
+
     def sdn_is_configured(self) -> bool:
         """True when an SDN controller base URL is present."""
-        return bool(self.sdn.base_url)
+        return bool(self.sdn_base_url)
 
     @classmethod
     def settings_customise_sources(
@@ -113,7 +127,8 @@ def _reject_secrets_in_yaml(path: Path) -> None:
     if found:
         raise ValueError(
             f"Refusing to load secret key(s) {sorted(found)} from YAML ({path}). "
-            "Provide SDN_TOKEN / SDN_USERNAME / SDN_PASSWORD via environment or .env instead."
+            "Provide SDN_CONTROLLER_TOKEN / SDN_CONTROLLER_USERNAME / "
+            "SDN_CONTROLLER_PASSWORD via environment or .env instead."
         )
 
 

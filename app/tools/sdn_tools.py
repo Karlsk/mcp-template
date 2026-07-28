@@ -1,42 +1,67 @@
-"""SDN query tools (GET operations).
+"""SDN query tools.
 
-Skeleton: no tools are registered yet. When wiring the real controller, add
-tools here following the same pattern as ``sdn_health`` in
-:mod:`app.tools.system` — **including the final ``except Exception``** that
-prevents any raw exception from reaching MCP's error path::
-
-    import logging
-    from mcp.server.fastmcp import Context, FastMCP
-
-    from app.sdn import SDNClient, SDNError
-
-    logger = logging.getLogger(__name__)
-
-
-    def register(mcp: FastMCP) -> None:
-        @mcp.tool(description="List all devices known to the SDN controller.")
-        async def list_devices(ctx: Context) -> dict[str, object]:
-            try:
-                sdn: SDNClient = ctx.request_context.lifespan_context["sdn_client"]
-                devices = await sdn.get_devices()  # method to add in app/sdn/client.py
-                return {"devices": [d.model_dump() for d in devices]}
-            except SDNError as exc:
-                await ctx.error(f"list_devices failed: {exc}")
-                return {"devices": [], "error": str(exc)}
-            except Exception:
-                logger.exception("list_devices unexpected failure")
-                return {"devices": [], "error": "Unexpected server error."}
-
-``register_all`` in :mod:`app.tools` already calls ``register`` here, so a new
-tool is live the moment it is defined — no other wiring required.
+Registered via :func:`app.tools.register_all`. Every tool must:
+- Get ``SDNClient`` from ``ctx.request_context.lifespan_context["sdn_client"]``.
+- Catch ``SDNError`` (sanitized message) and ``Exception`` (last-resort fallback)
+  so raw exceptions never reach MCP's error path (which would serialize ``str()``
+  containing URLs/credentials into the ``isError`` text field).
 """
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+import logging
+from typing import Any
+
+from mcp.server.fastmcp import Context, FastMCP
+
+from app.sdn import SDNClient, SDNError
+
+logger = logging.getLogger(__name__)
 
 
 def register(mcp: FastMCP) -> None:
-    """Register SDN query tools. None yet — see module docstring for the pattern."""
-    # TODO(sdn-wiring): register real GET tools (devices, topology, links, ...).
-    return None
+    """Register SDN query tools."""
+
+    @mcp.tool(
+        name="sdn_alerts",
+        description=(
+            "Query device alerts from the SDN controller. "
+            "Returns structured result with total count and alert list."
+        ),
+    )
+    async def sdn_alerts(ctx: Context[Any, Any, Any]) -> dict[str, object]:
+        """POST /monitor/v2/alert/page with fixed body (PE端口Down, 1h, top 10)."""
+        try:
+            sdn: SDNClient = ctx.request_context.lifespan_context["sdn_client"]
+            if not sdn.configured:
+                return {
+                    "ok": False,
+                    "configured": False,
+                    "detail": "SDN controller not configured (skeleton mode).",
+                }
+            endpoint = "/monitor/v2/alert/page"
+            body = {
+                "interval": "1h",
+                "namespace": "device",
+                "category": "PE端口Down",
+                "pageNum": 1,
+                "pageSize": 10,
+            }
+            resp = await sdn.request("POST", endpoint, json=body)
+            data = resp.json()
+            return {
+                "ok": True,
+                "configured": True,
+                "status_code": resp.status_code,
+                "total": data.get("total", 0),
+                "success": data.get("success", False),
+                "message": data.get("message", ""),
+                "data": data.get("data", []),
+            }
+        except SDNError as exc:
+            await ctx.error(f"sdn_alerts failed: {exc}")
+            return {"ok": False, "configured": True, "detail": str(exc)}
+        except Exception:
+            logger.exception("sdn_alerts unexpected failure")
+            return {"ok": False, "configured": False, "detail": "Unexpected server error."}
+

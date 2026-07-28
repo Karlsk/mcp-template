@@ -1,0 +1,19 @@
+# SDN controller API configuration (NON-SECRET).
+# Secrets (tokens/passwords) are loaded from environment / .env, NOT here.
+
+# Base URL of the SDN controller REST API. Empty string = not configured
+# (server runs in "skeleton mode"; SDN tools report configured=false).
+sdn:
+  base_url: ""
+  auth_type: "no-auth"   # one of: no-auth | bearer | basic
+  timeout: 30.0          # per-request timeout in seconds
+  retry:
+    max_retries: 3
+    base_delay: 1.0
+    max_delay: 30.0
+  # Named controller endpoints. Add/remove as the real controller requires.
+  # Consumed by app/sdn/client.py when wiring real GET tools.
+  endpoints:
+    health: "/"
+    devices: "/devices"
+    topology: "/topology"

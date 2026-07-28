@@ -1,0 +1,24 @@
+# Run: docker compose -f deploy/docker-compose.yml up --build
+# Secrets are read from a .env file next to the project root (never committed).
+
+services:
+  sdn-mcp:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: sdn-mcp:latest
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8000"
+      MCP_LOG_LEVEL: "${MCP_LOG_LEVEL:-INFO}"
+      # SDN secrets injected from the host environment / .env (never baked in).
+      SDN_TOKEN: "${SDN_TOKEN:-}"
+      SDN_USERNAME: "${SDN_USERNAME:-}"
+      SDN_PASSWORD: "${SDN_PASSWORD:-}"
+      SDN_CONFIG_FILE: "/app/config/sdn_controller.yaml"
+    volumes:
+      # Override config without rebuilding the image.
+      - ../config:/app/config:ro
+    restart: unless-stopped

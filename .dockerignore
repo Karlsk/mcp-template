@@ -17,8 +17,9 @@ dist/
 # Tests & docs are not needed in the runtime image
 tests/
 scripts/
-README.md
 .env.example
+# NOTE: README.md is required by the build (pyproject.toml references it), so it
+# must NOT be excluded here.
 
 # Local secrets (never bake into an image)
 .env

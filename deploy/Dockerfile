@@ -28,6 +28,9 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     SDN_CONFIG_FILE=/app/config/sdn_controller.yaml
 
 COPY --from=builder /app/.venv /app/.venv
+# The project is installed editable (.pth -> /app), so its source must be present
+# in the runtime image too, or `import app` fails.
+COPY --from=builder /app/app /app/app
 COPY config /app/config
 
 EXPOSE 8000

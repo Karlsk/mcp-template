@@ -13,10 +13,11 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8000"
       MCP_LOG_LEVEL: "${MCP_LOG_LEVEL:-INFO}"
-      # SDN secrets injected from the host environment / .env (never baked in).
-      SDN_TOKEN: "${SDN_TOKEN:-}"
-      SDN_USERNAME: "${SDN_USERNAME:-}"
-      SDN_PASSWORD: "${SDN_PASSWORD:-}"
+      # SDN controller connection injected from host environment / .env (never baked in).
+      SDN_CONTROLLER_BASE_URL: "${SDN_CONTROLLER_BASE_URL:-}"
+      SDN_CONTROLLER_USERNAME: "${SDN_CONTROLLER_USERNAME:-}"
+      SDN_CONTROLLER_PASSWORD: "${SDN_CONTROLLER_PASSWORD:-}"
+      SDN_CONTROLLER_TOKEN: "${SDN_CONTROLLER_TOKEN:-}"
       SDN_CONFIG_FILE: "/app/config/sdn_controller.yaml"
     volumes:
       # Override config without rebuilding the image.

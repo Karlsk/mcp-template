@@ -18,6 +18,9 @@
   （bearer/basic）、REST 方法封装、可注入 transport（便于单测）。
 - **SDN 对接层**（`app/sdn/`）：基于通用客户端，把 httpx 错误映射为安全的 `SDNError`
   层级（公开 message 不含 URL/状态码）。
+- **认证与 token 刷新**（`app/sdn/`）：三种 `auth_type`（`no-auth` / `bearer` 固定 api-key /
+  `basic` 用账号密码登录换 token）；`basic` 模式在 token 过期（401）时自动重新登录，
+  业务代码无感知（统一走 `SDNClient._send`）。
 - **配置**（`app/settings.py`）：YAML 存非敏感结构、`.env`/环境变量存 secret（`SecretStr`）。
 - **工具**（`app/tools/`）：`ping`（验证 server）、`sdn_health`（验证 SDN 接缝）。
 - **测试**：38+ 用例，覆盖率 ≥96%，含内存传输（无需真起 HTTP）。
@@ -56,13 +59,16 @@ uv sync          # dev 组（pytest/ruff/mypy）默认随 uv sync 安装
    ```yaml
    sdn:
      base_url: ""              # 留空 = 骨架模式（server 正常启动）
-     auth_type: "no-auth"      # no-auth | bearer | basic
+     auth_type: "no-auth"      # no-auth | bearer (固定 api-key) | basic (账密登录换 token，401 自动刷新)
      timeout: 30.0
+     ssl_verify: true          # 自签名证书设为 false
      retry: { max_retries: 3, base_delay: 1.0, max_delay: 30.0 }
      endpoints:
        health: "/"
        devices: "/devices"
        topology: "/topology"
+       # login: "/oauth/token"  # auth_type=basic：POST {username,password,device_id} 换/刷新 token
+     token_field: "access_token"  # auth_type=basic：登录响应 JSON 中 token 的 key
    ```
 
 2. **secret 与运行参数** —— `.env`（从 `.env.example` 复制，**切勿提交真实值**）：
@@ -128,6 +134,31 @@ sdn-mcp-template/
 └── deploy/                      # Dockerfile + docker-compose
 ```
 
+## 认证与 Token 自动刷新
+
+`auth_type`（`config/sdn_controller.yaml`）决定鉴权策略。业务方法（`health` 与未来的
+`get_devices` 等）统一走 `SDNClient.request` / `SDNClient._send`，**完全不感知 token 与刷新**：
+
+| `auth_type` | 含义 | token 来源 | 首个 token 获取时机 | 收到 401 时 |
+|---|---|---|---|---|
+| `no-auth` | 不认证 | — | — | 直接报错 |
+| `bearer` | 固定 api-key | `SDN_TOKEN`（静态） | 构造时 | 直接报错（不刷新） |
+| `basic` | 账密换 token | 登录端点（POST 账密 body） | 启动时 `initialize()`（失败即启动失败） | 自动重新登录并重试一次 |
+
+`basic` 模式说明（其余两种模式行为不变）：
+
+- 默认登录契约：向 `endpoints.login` **POST** JSON `{username, password, device_id}`（`device_id`
+  为进程级 UUID；凭证走 body，**登录端点用 no-auth，不带任何鉴权头**），从响应 JSON 的
+  `token_field`（默认 `access_token`）取出 bearer token；**数据请求改用该 bearer token**。
+- token 过期（数据请求收到 401）时自动重新登录：`asyncio.Lock` + 代际计数器防并发击穿
+  （N 个并发 401 只登录一次，即便新 token 与旧 token 字符串相同）、登录失败 5s 负缓存、
+  **最多刷新一次**（再 401 立即报 `SDNAuthError`，永不死循环）。
+- 登录用独立的 no-auth 客户端，**结构上不可能递归**（登录请求不带 bearer、不走刷新逻辑）。
+- 自签名证书：`sdn.ssl_verify: false` 即可跳过 TLS 校验（透传给底层 httpx）。
+- 非标准登录契约（不同 method / body / token 路径）只需重写 `SDNClient.get_token`，其余机制无需改动。
+- 业务调用入口：`await client.request("POST", endpoint, json={...})` —— 自动带上/刷新 token，
+  失败抛 `SDNError`（脱敏）。一个真实示例见 `scripts/test_sdn_live.py`。
+
 ## 新增一个 SDN 工具
 
 接入真实控制器时，**只需 3 处改动，无需改 server/config**：
@@ -141,13 +172,14 @@ sdn-mcp-template/
        status: str | None = None
    ```
 
-2. **`app/sdn/client.py`** —— 加方法（基于 `settings.sdn.endpoints`）：
+2. **`app/sdn/client.py`** —— 加方法（基于 `settings.sdn.endpoints`）。所有业务方法统一走
+   `self._send(...)`，鉴权与 token 刷新由框架处理，业务代码无感知：
    ```python
    async def get_devices(self) -> list[Device]:
        self._require_configured()
        endpoint = self._settings.sdn.endpoints["devices"]
        try:
-           resp = await self._http.get(endpoint)
+           resp = await self._send("get", endpoint)
        except httpx.HTTPError as exc:
            raise _map_http_error(exc) from exc
        data = resp.json().get("devices", [])
@@ -200,7 +232,8 @@ docker compose -f deploy/docker-compose.yml up --build
 - **错误脱敏**：MCP 会把未捕获异常的 `str()` 当作 `isError` 文本回传模型（httpx 错误串含
   URL/状态码）。本模板在工具层捕获所有 `SDNError` 返回结构化 dict，且 `SDNError.__str__`
   只暴露安全 message，原始 detail 仅记录在服务端日志。
-- **token 不入 URL**：bearer/basic 仅走 HTTP header，不进 query/path，不记录 request headers。
+- **token/凭证不入 URL**：数据请求的 bearer token 走 HTTP header；basic 登录凭证走 JSON body。
+  两者均不进 query/path，也不记录 request headers。
 
 ## 技术说明
 

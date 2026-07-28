@@ -29,6 +29,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from pydantic import ValidationError
 
 from app.common.http import AuthConfig, HttpClient, HttpClientConfig, RetryConfig
 from app.sdn.exceptions import (
@@ -39,7 +40,7 @@ from app.sdn.exceptions import (
     SDNHTTPError,
     SDNNotFoundError,
 )
-from app.sdn.models import SDNHealthResponse
+from app.sdn.models import SDNAlertsResponse, SDNHealthResponse
 
 if TYPE_CHECKING:
     from app.settings import RetrySettings, Settings
@@ -299,7 +300,37 @@ class SDNClient:
             latency_ms=latency_ms,
         )
 
-    # TODO(sdn-wiring): add real GET methods, e.g.:
+    async def query_alerts(
+        self,
+        *,
+        interval: str = "1h",
+        namespace: str = "device",
+        category: str = "PE端口Down",
+        page_num: int = 1,
+        page_size: int = 10,
+    ) -> SDNAlertsResponse:
+        """Query paged device alerts (business method).
+
+        Owns the alert endpoint, request-body shape, and response parsing —
+        business logic that must NOT live in the MCP tool layer. Token
+        acquisition/refresh and HTTP-error mapping are handled transparently by
+        :meth:`request`. The response is boundary-validated into a typed model.
+        """
+        endpoint = self._settings.sdn.endpoints.get("alerts", "/monitor/v2/alert/page")
+        body = {
+            "interval": interval,
+            "namespace": namespace,
+            "category": category,
+            "pageNum": page_num,
+            "pageSize": page_size,
+        }
+        resp = await self.request("POST", endpoint, json=body)
+        try:
+            return SDNAlertsResponse.model_validate(resp.json())
+        except (ValueError, ValidationError) as exc:
+            raise SDNError("SDN alerts response was malformed.", detail=str(exc)) from exc
+
+    # TODO(sdn-wiring): add further business methods (get_devices, get_topology, ...):
     # async def get_devices(self) -> list[Device]:
     #     self._require_configured()
     #     try:

@@ -18,5 +18,6 @@ sdn:
     devices: "/devices"
     topology: "/topology"
     login: "/oauth/token"   # auth_type=basic: POSTed with {username,password,device_id} to obtain/refresh the token
+    alerts: "/monitor/v2/alert/page"   # paged device alerts (query_alerts)
   # auth_type=basic only: JSON key holding the bearer token in the login response.
   token_field: "access_token"

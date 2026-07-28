@@ -18,6 +18,7 @@ from app.sdn.exceptions import (
     SDNHTTPError,
     SDNNotFoundError,
 )
+from app.sdn.models import SDNAlertsResponse
 from app.settings import RetrySettings, SdnSettings, Settings
 
 BASE_URL = "https://sdn.example"
@@ -545,3 +546,113 @@ async def test_request_maps_status_error_to_sdn_error() -> None:
             await client.request("GET", "/x")
     finally:
         await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# query_alerts business method (endpoint + body + boundary validation in client)
+# ---------------------------------------------------------------------------
+
+
+def _alerts_body(total: int = 1) -> dict[str, object]:
+    return {
+        "success": True,
+        "total": total,
+        "message": "请求成功",
+        "code": 0,
+        "data": [
+            {
+                "id": "a1",
+                "category": "PE端口Down",
+                "source": "SW-1",
+                "component": "Eth1",
+                "level": "CRITICAL",
+                "msg": "port down",
+                "time": "2026-01-01",
+                "traceId": "collector/x/1",  # extra field, must be preserved
+            }
+        ],
+    }
+
+
+async def test_query_alerts_success_validates_and_preserves_extra() -> None:
+    """query_alerts parses into a typed model, builds the body, preserves extras."""
+    seen: dict[str, object] = {}
+
+    def main_handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url.path)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_alerts_body(total=1))
+
+    client = SDNClient(make_settings(), transport=httpx.MockTransport(main_handler))
+    try:
+        result = await client.query_alerts(interval="2h", page_size=5)
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, SDNAlertsResponse)
+    assert result.total == 1
+    assert result.success is True
+    assert result.code == 0
+    assert result.data[0].source == "SW-1"
+    # extra (untyped) field survives via extra="allow"
+    assert result.data[0].model_dump()["traceId"] == "collector/x/1"
+    # the client owns the endpoint + request body (business logic in the client)
+    assert seen["url"] == "/monitor/v2/alert/page"
+    assert seen["body"] == {
+        "interval": "2h",
+        "namespace": "device",
+        "category": "PE端口Down",
+        "pageNum": 1,
+        "pageSize": 5,
+    }
+
+
+async def test_query_alerts_uses_configured_endpoint() -> None:
+    sdn = SdnSettings(
+        base_url=BASE_URL,
+        auth_type="bearer",
+        timeout=1.0,
+        retry=RetrySettings(max_retries=0, base_delay=0.0, max_delay=0.0),
+        endpoints={"health": "/", "alerts": "/custom/alerts"},
+    )
+    settings = Settings(sdn=sdn, sdn_controller_token=SecretStr("tok"))
+    seen: list[str] = []
+
+    def main_handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url.path))
+        return httpx.Response(200, json=_alerts_body())
+
+    client = SDNClient(settings, transport=httpx.MockTransport(main_handler))
+    try:
+        await client.query_alerts()
+    finally:
+        await client.aclose()
+    assert seen == ["/custom/alerts"]
+
+
+async def test_query_alerts_malformed_response_raises_sdn_error() -> None:
+    """A non-JSON / non-conforming response surfaces as a sanitized SDNError."""
+    main = httpx.MockTransport(lambda _r: httpx.Response(200, content=b"not-json"))
+    client = SDNClient(make_settings(), transport=main)
+    try:
+        with pytest.raises(SDNError):
+            await client.query_alerts()
+    finally:
+        await client.aclose()
+
+
+async def test_query_alerts_refreshes_token_on_401() -> None:
+    """basic mode: a 401 on the alerts call triggers a login + retry (transparent)."""
+    main, main_calls = _sequence_transport(
+        [httpx.Response(401), httpx.Response(200, json=_alerts_body())]
+    )
+    login, login_calls = _login_transport(tokens=["tok-1", "tok-2"])
+    client = SDNClient(make_basic_settings(), transport=main, login_transport=login)
+    try:
+        await client.initialize()
+        result = await client.query_alerts()
+    finally:
+        await client.aclose()
+    assert result.total == 1
+    assert main_calls() == 2  # 401 + retry
+    assert login_calls() == 2  # init + one refresh

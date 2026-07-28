@@ -163,12 +163,13 @@ def _login_transport() -> httpx.MockTransport:
 
 
 async def test_sdn_alerts_success() -> None:
-    """sdn_alerts returns structured result with total and data."""
+    """sdn_alerts delegates to the client and returns the typed result."""
     alert_data = [{"id": "1", "category": "PE端口Down", "source": "SW-1"}]
 
     def main_handler(_r: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"success": True, "total": 1, "message": "ok", "data": alert_data}
+            200,
+            json={"success": True, "total": 1, "message": "ok", "code": 0, "data": alert_data},
         )
 
     settings = _basic_settings()
@@ -187,11 +188,45 @@ async def test_sdn_alerts_success() -> None:
     payload = _payload(result)
     assert payload["ok"] is True
     assert payload["configured"] is True
-    assert payload["status_code"] == 200
     assert payload["total"] == 1
     assert payload["success"] is True
     assert payload["message"] == "ok"
-    assert payload["data"] == alert_data
+    assert payload["code"] == 0
+    # data is the boundary-validated model (typed fields + defaults)
+    assert payload["data"][0]["id"] == "1"
+    assert payload["data"][0]["source"] == "SW-1"
+    assert payload["data"][0]["category"] == "PE端口Down"
+
+
+async def test_sdn_alerts_invalid_page_size() -> None:
+    """Out-of-range page_size is rejected by the tool before any client call."""
+    settings = _basic_settings()
+    mcp = build_server(
+        settings,
+        sdn_client_factory=lambda: SDNClient(settings, login_transport=_login_transport()),
+    )
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_alerts", {"page_size": 0})
+    assert result.isError is False
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "page_size" in payload["detail"]
+
+
+async def test_sdn_alerts_invalid_page_num() -> None:
+    """page_num < 1 is rejected by the tool before any client call."""
+    settings = _basic_settings()
+    mcp = build_server(
+        settings,
+        sdn_client_factory=lambda: SDNClient(settings, login_transport=_login_transport()),
+    )
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_alerts", {"page_num": 0})
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "page_num" in payload["detail"]
 
 
 async def test_sdn_alerts_skeleton_mode() -> None:

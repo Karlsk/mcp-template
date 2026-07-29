@@ -57,6 +57,10 @@ class SdnSettings(BaseModel):
     ssl_verify: bool = True
     # JSON key holding the bearer token in the login response (auth_type=basic).
     token_field: str = "access_token"
+    # Opt-in (DEBUG only): log redacted, truncated request/response bodies for
+    # SDN troubleshooting. Error-response bodies are always logged (redacted) at
+    # WARNING regardless of this flag.
+    http_log_bodies: bool = False
 
 
 class Settings(BaseSettings):

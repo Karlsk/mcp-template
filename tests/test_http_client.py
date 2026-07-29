@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import httpx
 import pytest
 
@@ -318,3 +321,140 @@ async def test_set_bearer_token_empty_removes_header() -> None:
 def test_is_retriable_returns_false_for_unrelated_exception() -> None:
     """A non-transport, non-HTTP-status exception is never retried."""
     assert HttpClient._is_retriable(ValueError("not an httpx error")) is False
+
+
+def _http_records(caplog: pytest.LogCaptureFixture) -> list[Any]:
+    return [r for r in caplog.records if r.name == "app.common.http"]
+
+
+async def test_logs_request_response_metadata_without_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler, _ = _counting_handler([httpx.Response(200, json={"ok": True})])
+    client = HttpClient(
+        HttpClientConfig(base_url="https://sdn.example", transport=httpx.MockTransport(handler))
+    )
+    with caplog.at_level(logging.DEBUG, logger="app.common.http"):
+        try:
+            await client.get("/health")
+        finally:
+            await client.close()
+    records = _http_records(caplog)
+    messages = [r.message for r in records]
+    assert "http_request" in messages
+    assert "http_response" in messages
+    resp = next(r for r in records if r.message == "http_response")
+    assert resp.status == 200
+    assert resp.method == "GET"
+    assert resp.url == "/health"
+    assert resp.elapsed_ms >= 0.0
+    req = next(r for r in records if r.message == "http_request")
+    # Bodies are off by default.
+    assert getattr(req, "request_body", "missing") is None
+    assert getattr(resp, "response_body", "missing") is None
+
+
+async def test_logs_redacted_bodies_when_enabled(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": "ok", "access_token": "resptoken"})
+
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(handler),
+            log_bodies=True,
+        )
+    )
+    body = {"username": "u", "password": "supersecret", "access_token": "tok123", "safe": "keep"}
+    with caplog.at_level(logging.DEBUG, logger="app.common.http"):
+        try:
+            await client.post("/login", json=body)
+        finally:
+            await client.close()
+    records = _http_records(caplog)
+    req = next(r for r in records if r.message == "http_request")
+    resp = next(r for r in records if r.message == "http_response")
+    req_json = getattr(req, "request_body", {})["json"]
+    resp_body = getattr(resp, "response_body", "")
+    assert "supersecret" not in req_json
+    assert "tok123" not in req_json
+    assert "***" in req_json
+    assert "keep" in req_json
+    assert "resptoken" not in resp_body
+    assert "***" in resp_body
+
+
+async def test_logs_redacted_error_body_on_http_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Error-path body is logged (redacted) at WARNING even with log_bodies off."""
+    handler, _ = _counting_handler(
+        [httpx.Response(500, json={"error": "db down", "password": "leak"})]
+    )
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(handler),
+            retry=RetryConfig(max_retries=0, base_delay=0.0, max_delay=0.0),
+        )
+    )
+    with caplog.at_level(logging.DEBUG, logger="app.common.http"):
+        try:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.get("/health")
+        finally:
+            await client.close()
+    errors = [r for r in _http_records(caplog) if r.message == "http_error"]
+    assert len(errors) == 1
+    err = errors[0]
+    assert err.levelno == logging.WARNING
+    assert err.status == 500
+    body = getattr(err, "response_body", "")
+    assert "db down" in body
+    assert "leak" not in body
+    assert "***" in body
+
+
+async def test_logs_transport_error(caplog: pytest.LogCaptureFixture) -> None:
+    handler, _ = _counting_handler([httpx.ConnectError("boom")])
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(handler),
+            retry=RetryConfig(max_retries=0, base_delay=0.0, max_delay=0.0),
+        )
+    )
+    with caplog.at_level(logging.DEBUG, logger="app.common.http"):
+        try:
+            with pytest.raises(httpx.ConnectError):
+                await client.get("/health")
+        finally:
+            await client.close()
+    errors = [r for r in _http_records(caplog) if r.message == "http_error"]
+    assert len(errors) == 1
+    err = errors[0]
+    assert err.error == "ConnectError"
+    assert getattr(err, "status", "missing") is None
+    assert getattr(err, "response_body", "missing") is None
+
+
+async def test_logs_nonretriable_error_once(caplog: pytest.LogCaptureFixture) -> None:
+    handler, get_calls = _counting_handler([httpx.Response(401, json={"msg": "bad creds"})])
+    client = HttpClient(
+        HttpClientConfig(
+            base_url="https://sdn.example",
+            transport=httpx.MockTransport(handler),
+            retry=RetryConfig(max_retries=3, base_delay=0.0, max_delay=0.0),
+        )
+    )
+    with caplog.at_level(logging.DEBUG, logger="app.common.http"):
+        try:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.get("/health")
+        finally:
+            await client.close()
+    assert get_calls() == 1
+    errors = [r for r in _http_records(caplog) if r.message == "http_error"]
+    assert len(errors) == 1
+    assert errors[0].status == 401
+    assert getattr(errors[0], "retry_in", "missing") is None

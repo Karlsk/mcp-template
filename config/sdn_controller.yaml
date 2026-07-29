@@ -21,3 +21,6 @@ sdn:
     alerts: "/monitor/v2/alert/page"   # paged device alerts (query_alerts)
   # auth_type=basic only: JSON key holding the bearer token in the login response.
   token_field: "access_token"
+  # Opt-in request/response body logging for SDN troubleshooting (DEBUG level,
+  # redacted + truncated). Error-response bodies are logged at WARNING regardless.
+  http_log_bodies: false

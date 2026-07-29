@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Iterator
 from contextlib import AbstractAsyncContextManager
 
 import httpx
@@ -31,6 +32,26 @@ def _isolate_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "SDN_CONTROLLER_TOKEN",
     ):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_app_logger() -> Iterator[None]:
+    """Snapshot/restore the ``app`` logger around every test.
+
+    ``server.main()`` calls ``setup_logging``, which mutates the global ``app``
+    logger (sets its level, disables propagation, installs a handler). Without
+    isolation that state would leak across tests and break ``caplog`` elsewhere.
+    """
+    logger = logging.getLogger("app")
+    saved_level = logger.level
+    saved_propagate = logger.propagate
+    saved_handlers = list(logger.handlers)
+    try:
+        yield
+    finally:
+        logger.level = saved_level
+        logger.propagate = saved_propagate
+        logger.handlers[:] = saved_handlers
 
 
 def make_sdn_settings(base_url: str = "") -> SdnSettings:

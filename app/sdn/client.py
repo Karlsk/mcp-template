@@ -283,8 +283,14 @@ class SDNClient:
         handled transparently by :meth:`_send`. Business methods (and live
         tests) route here and never touch tokens or headers. Raises a sanitized
         :class:`SDNError` on failure; never a raw httpx error.
+
+        ``Accept: application/json`` is set on every call: the controller's
+        ``/api/...`` REST endpoints answer 415 (Unsupported Media Type) without it.
         """
         self._require_configured()
+        headers: dict[str, str] = dict(kwargs.get("headers") or {})
+        headers.setdefault("Accept", "application/json")
+        kwargs["headers"] = headers
         try:
             return await self._send(method, endpoint, **kwargs)
         except httpx.HTTPError as exc:

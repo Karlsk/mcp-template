@@ -1062,3 +1062,23 @@ async def test_query_operation_logs_malformed_raises_sdn_error() -> None:
             await client.query_operation_logs()
     finally:
         await client.aclose()
+
+
+async def test_business_request_sends_accept_json_header() -> None:
+    """Every business request carries Accept: application/json.
+
+    The controller's /api/... REST endpoints return HTTP 415 (Unsupported Media
+    Type) without it, so the header is injected once in the request() primitive.
+    """
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["accept"] = request.headers.get("accept")
+        return httpx.Response(200, json={"topology": []})
+
+    client = SDNClient(make_settings(), transport=httpx.MockTransport(handler))
+    try:
+        await client.get_topology()
+    finally:
+        await client.aclose()
+    assert seen["accept"] == "application/json"

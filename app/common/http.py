@@ -13,26 +13,110 @@ Design notes:
 - Usable as an async context manager (``async with HttpClient(...) as c:``) for
   deterministic resource cleanup.
 
-Security note: the retry ``logger.warning`` logs ``str(exc)``, which for an httpx
-error embeds the request URL. This is server-side only by design (the token lives
-in the ``Authorization`` header, never the URL). Do not forward these logs to a
-channel the model can read — sanitize at the SDN layer (see ``app/sdn``).
+Security note: each attempt emits structured ``http_request`` / ``http_response``
+/ ``http_error`` log records carrying the URL and status as fields. These are
+server-side only. The token always lives in the ``Authorization`` header (never
+the URL) and headers are never logged. On HTTP errors a redacted, truncated
+response-body excerpt is logged at WARNING so the controller's error is visible;
+success-path request/response bodies are logged at DEBUG only when
+``HttpClientConfig.log_bodies`` is set, with sensitive keys (password / token /
+authorization / ...) masked. Do not forward these logs to a channel the model can
+read — sanitize at the SDN layer (see ``app/sdn``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 Headers = Mapping[str, str]
+
+# Keys whose values are masked in logged request/response bodies. Matched as a
+# case-insensitive substring of the JSON key (so "access_token", "api_key", and
+# "user_password" are all caught). Per-client additions come from
+# HttpClientConfig.extra_sensitive_keys (e.g. the login-response token field).
+_SENSITIVE: Final[tuple[str, ...]] = (
+    "password", "secret", "token", "authorization", "api_key", "apikey", "cookie",
+)
+_REDACTED = "***"
+
+
+def _is_sensitive(key: str, extra: tuple[str, ...]) -> bool:
+    lowered = key.lower()
+    return any(s in lowered for s in _SENSITIVE) or any(s.lower() in lowered for s in extra)
+
+
+def _redact(obj: Any, extra_sensitive: tuple[str, ...]) -> Any:
+    """Recursively mask values of sensitive keys in a JSON-like structure."""
+    if isinstance(obj, dict):
+        return {
+            key: (
+                _REDACTED
+                if _is_sensitive(str(key), extra_sensitive)
+                else _redact(value, extra_sensitive)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact(item, extra_sensitive) for item in obj]
+    return obj
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(truncated, {len(text)} bytes)"
+
+
+def _redact_request_body(
+    json_body: Any,
+    params: dict[str, Any] | None,
+    content: str | bytes | None,
+    limit: int,
+    extra_sensitive: tuple[str, ...],
+) -> dict[str, Any] | None:
+    """Build a redacted, truncated view of the request payload for logs."""
+    parts: dict[str, Any] = {}
+    if json_body is not None:
+        parts["json"] = _truncate_text(
+            json.dumps(_redact(json_body, extra_sensitive), ensure_ascii=False, default=str),
+            limit,
+        )
+    if params:
+        parts["params"] = _redact(params, extra_sensitive)
+    if content is not None:
+        text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
+        parts["content"] = _truncate_text(text, limit)
+    return parts or None
+
+
+def _redact_response_body(
+    response: httpx.Response, limit: int, extra_sensitive: tuple[str, ...]
+) -> str | None:
+    """Return a redacted, truncated string view of a response body for logs.
+
+    Parses JSON when possible (masking sensitive keys), falls back to raw text,
+    and finally to a size placeholder for undecodable (binary) bodies.
+    """
+    try:
+        parsed = response.json()
+    except ValueError:
+        try:
+            return _truncate_text(response.text, limit)
+        except Exception:
+            return f"<binary {len(response.content)} bytes>"
+    redacted = _redact(parsed, extra_sensitive)
+    return _truncate_text(json.dumps(redacted, ensure_ascii=False, default=str), limit)
 
 
 @dataclass
@@ -65,6 +149,12 @@ class HttpClientConfig:
     headers: dict[str, str] = field(default_factory=dict)
     ssl_verify: bool = True
     transport: httpx.AsyncBaseTransport | None = None
+    # Opt-in: log redacted, truncated request/response bodies at DEBUG (the
+    # error-path response body is always logged at WARNING regardless of this).
+    log_bodies: bool = False
+    body_log_limit: int = 2048
+    # Extra JSON keys to mask in addition to the built-in sensitive set.
+    extra_sensitive_keys: tuple[str, ...] = ()
 
 
 class HttpClient:
@@ -141,6 +231,16 @@ class HttpClient:
             )
         return self._client
 
+    def _backoff_delay(self, attempt: int) -> float:
+        """Full-jitter exponential backoff delay (seconds) for the given attempt."""
+        cap = min(
+            self._config.retry.base_delay * (2 ** (attempt - 1)),
+            self._config.retry.max_delay,
+        )
+        # Full jitter (AWS "Exponential Backoff and Jitter"): randomize within
+        # [0, cap] so concurrent clients don't retry in lockstep.
+        return random.uniform(0, cap)
+
     async def _request(
         self,
         method: str,
@@ -152,36 +252,88 @@ class HttpClient:
         headers: Headers | None = None,
         raise_for_status: bool = True,
     ) -> httpx.Response:
-        """Execute an HTTP request, retrying only on retriable failures."""
+        """Execute an HTTP request, retrying only on retriable failures.
+
+        Emits structured ``http_request`` / ``http_response`` / ``http_error``
+        log records per attempt (see the module docstring for the body policy).
+        """
         client = await self._get_client()
         max_attempts = self._config.retry.max_retries + 1
         last_exc: Exception | None = None
+        log_bodies = self._config.log_bodies
+        body_limit = self._config.body_log_limit
+        extra_sensitive = self._config.extra_sensitive_keys
 
         for attempt in range(1, max_attempts + 1):
+            logger.debug(
+                "http_request",
+                extra={
+                    "method": method,
+                    "url": url,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "request_body": (
+                        _redact_request_body(json, params, content, body_limit, extra_sensitive)
+                        if log_bodies
+                        else None
+                    ),
+                },
+            )
+            start = time.perf_counter()
             try:
                 response = await client.request(
                     method, url, params=params, json=json, content=content, headers=headers
                 )
                 if raise_for_status:
                     response.raise_for_status()
+                elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+                logger.debug(
+                    "http_response",
+                    extra={
+                        "method": method,
+                        "url": url,
+                        "attempt": attempt,
+                        "status": response.status_code,
+                        "elapsed_ms": elapsed_ms,
+                        "response_body": (
+                            _redact_response_body(response, body_limit, extra_sensitive)
+                            if log_bodies
+                            else None
+                        ),
+                    },
+                )
                 return response
             except Exception as exc:
+                elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
                 last_exc = exc
-                if not self._is_retriable(exc):
-                    raise
-                if attempt >= max_attempts:
-                    break
-                cap = min(
-                    self._config.retry.base_delay * (2 ** (attempt - 1)),
-                    self._config.retry.max_delay,
-                )
-                # Full jitter (AWS "Exponential Backoff and Jitter"): randomize the
-                # delay within [0, cap] so concurrent clients don't retry in lockstep.
-                delay = random.uniform(0, cap)
+                retriable = self._is_retriable(exc)
+                will_retry = retriable and attempt < max_attempts
+                delay = self._backoff_delay(attempt)
+                status: int | None = None
+                response_body: str | None = None
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status = exc.response.status_code
+                    response_body = _redact_response_body(
+                        exc.response, body_limit, extra_sensitive
+                    )
                 logger.warning(
-                    "Request %s %s failed (attempt %d/%d), retrying in %.2fs: %s",
-                    method, url, attempt, max_attempts, delay, exc,
+                    "http_error",
+                    extra={
+                        "method": method,
+                        "url": url,
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "status": status,
+                        "elapsed_ms": elapsed_ms,
+                        "error": type(exc).__name__,
+                        "response_body": response_body,
+                        "retry_in": delay if will_retry else None,
+                    },
                 )
+                if not retriable:
+                    raise
+                if not will_retry:
+                    break
                 await asyncio.sleep(delay)
 
         assert last_exc is not None  # loop only exits early via return/raise when exhausted

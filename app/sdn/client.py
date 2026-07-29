@@ -95,6 +95,7 @@ class SDNClient:
                     retry=_retry_from_settings(sdn.retry),
                     ssl_verify=sdn.ssl_verify,
                     transport=transport,
+                    log_bodies=sdn.http_log_bodies,
                 )
             )
             # Separate no-auth client for the login endpoint. Credentials travel
@@ -109,6 +110,10 @@ class SDNClient:
                     retry=_retry_from_settings(sdn.retry),
                     ssl_verify=sdn.ssl_verify,
                     transport=login_transport,
+                    log_bodies=sdn.http_log_bodies,
+                    # Mask the freshly-issued login token in opt-in success-body
+                    # logs even when token_field is e.g. "sessionId"/"jwt".
+                    extra_sensitive_keys=(sdn.token_field,),
                 )
             )
         else:
@@ -138,6 +143,7 @@ class SDNClient:
                     retry=_retry_from_settings(sdn.retry),
                     ssl_verify=sdn.ssl_verify,
                     transport=transport,
+                    log_bodies=sdn.http_log_bodies,
                 )
             )
             # _login_http stays None (no-auth/bearer/unconfigured need no login).

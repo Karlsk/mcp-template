@@ -13,6 +13,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from app.common.logging import setup_logging
 from app.sdn.client import SDNClient
 from app.settings import Settings
 from app.tools import register_all
@@ -101,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
         settings = settings.model_copy(update=overrides)
 
     mcp = build_server(settings)
+    # Configure the app.* JSON logger once at startup from MCP_LOG_LEVEL. Done
+    # after build_server so this is the final logging mutation; not in
+    # build_server itself (which tests use) to avoid disturbing test logging.
+    setup_logging(settings.mcp_log_level)
     mcp.run(transport=args.transport)
     return 0
 

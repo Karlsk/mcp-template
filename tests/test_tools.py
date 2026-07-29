@@ -6,6 +6,8 @@ import json
 from typing import Any
 
 import httpx
+import pytest
+from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import TextContent
 
@@ -162,6 +164,28 @@ def _login_transport() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+def _v15_server(handler: object) -> FastMCP:
+    """Build a server whose SDNClient uses a custom main transport (basic mode)."""
+    settings = _basic_settings()
+
+    def factory() -> SDNClient:
+        return SDNClient(
+            settings,
+            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+            login_transport=_login_transport(),
+        )
+
+    return build_server(settings, sdn_client_factory=factory)
+
+
+def _unconfigured_server() -> FastMCP:
+    from app.settings import SdnSettings
+
+    sdn = SdnSettings(base_url="", auth_type="basic", endpoints={"health": "/"})
+    settings = Settings(sdn=sdn)
+    return build_server(settings, sdn_client_factory=lambda: SDNClient(settings))
+
+
 async def test_sdn_alerts_success() -> None:
     """sdn_alerts delegates to the client and returns the typed result."""
     alert_data = [{"id": "1", "category": "PE端口Down", "source": "SW-1"}]
@@ -307,6 +331,316 @@ async def test_sdn_alerts_unexpected_error_does_not_leak() -> None:
     async with create_connected_server_and_client_session(mcp) as session:
         await session.initialize()
         result = await session.call_tool("sdn_alerts", {})
+    assert result.isError is False
+    payload = _payload(result)
+    assert payload == {"ok": False, "configured": False, "detail": "Unexpected server error."}
+    assert "secret" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# v1.5 tools (device / link / topology / perf / logs / alerts)
+# ---------------------------------------------------------------------------
+
+_EMPTY_OK = {"code": 0, "message": "ok", "data": []}
+
+
+def test_page_bounds_detail_rejects_invalid() -> None:
+    from app.tools.validation import page_bounds_detail
+
+    assert page_bounds_detail(0, 10) is not None  # page_num < 1
+    assert page_bounds_detail(1, 0) is not None  # page_size < 1
+    assert page_bounds_detail(1, 101) is not None  # page_size > MAX
+    assert page_bounds_detail(1, 10) is None  # valid
+
+
+def test_time_window_detail_branches() -> None:
+    from app.tools.validation import time_window_detail
+
+    assert time_window_detail("2026-07-29 10:00:00", None) is not None  # one-sided
+    assert time_window_detail("bad", "2026-07-29 10:00:00") is not None  # bad format
+    assert time_window_detail("2026-07-29 11:00:00", "2026-07-29 10:00:00") is not None  # start>end
+    assert time_window_detail(None, None) is None  # default window
+    assert time_window_detail("2026-07-29 10:00:00", "2026-07-29 11:00:00") is None  # valid
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("sdn_device_by_name", {"name": "X"}),
+        ("sdn_device_by_management_ip", {"management_ip": "10.0.0.1"}),
+        ("sdn_link_info", {}),
+        ("sdn_topology", {}),
+        ("sdn_port_traffic", {"device_name": "X", "port_name": "P"}),
+        ("sdn_link_performance", {"link_id": "L"}),
+        ("sdn_vpn_traffic", {"vpn_id": "v"}),
+        ("sdn_te_tunnel_traffic", {"device_name": "X", "tunnel_name": "T"}),
+        ("sdn_operation_logs", {}),
+        ("sdn_device_alerts", {}),
+    ],
+)
+async def test_v15_tool_skeleton_mode(tool: str, args: dict[str, Any]) -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(tool, args)
+    assert result.isError is False
+    assert _payload(result) == {
+        "ok": False,
+        "configured": False,
+        "detail": "SDN controller not configured (skeleton mode).",
+    }
+
+
+async def test_list_tools_includes_v15_tools() -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        names = {t.name for t in (await session.list_tools()).tools}
+    assert {
+        "sdn_device_by_name",
+        "sdn_device_by_management_ip",
+        "sdn_link_info",
+        "sdn_topology",
+        "sdn_port_traffic",
+        "sdn_link_performance",
+        "sdn_vpn_traffic",
+        "sdn_te_tunnel_traffic",
+        "sdn_operation_logs",
+        "sdn_device_alerts",
+    } <= names
+
+
+async def test_sdn_device_by_name_success_strips_password() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"id": "d1", "name": "n1", "management-ip": "10.0.0.1", "password": "secret"}
+                ],
+                "total_elements": 1,
+            },
+        )
+
+    async with create_connected_server_and_client_session(_v15_server(handler)) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_device_by_name", {"name": "n1"})
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["content"][0]["management-ip"] == "10.0.0.1"
+    assert "password" not in json.dumps(payload)
+
+
+async def test_sdn_device_by_management_ip_success() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": [{"id": "d1", "management-ip": "10.0.0.1"}]})
+
+    async with create_connected_server_and_client_session(_v15_server(handler)) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_device_by_management_ip", {"management_ip": "10.0.0.1"}
+        )
+    assert _payload(result)["ok"] is True
+
+
+async def test_sdn_device_by_name_empty_rejected() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_device_by_name", {"name": "  "})
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "name" in payload["detail"]
+
+
+async def test_sdn_link_info_success() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": [{"link-id": "L1", "link-status": "UP"}]})
+
+    async with create_connected_server_and_client_session(_v15_server(handler)) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_link_info", {"link_id": "L1"})
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["content"][0]["link-id"] == "L1"
+
+
+async def test_sdn_topology_success() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"topology": [{"topology-id": "t1", "node": [], "link": []}]}
+        )
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_topology", {})
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["topology"][0]["topology-id"] == "t1"
+
+
+async def test_sdn_port_traffic_success() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_EMPTY_OK))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_port_traffic", {"device_name": "SW-1", "port_name": "GE1"}
+        )
+    assert _payload(result)["ok"] is True
+
+
+async def test_sdn_port_traffic_bad_period_is_error() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_port_traffic", {"device_name": "SW-1", "port_name": "GE1", "period": "2m"}
+        )
+    assert result.isError is True  # Literal period rejected by the MCP schema
+
+
+async def test_sdn_port_traffic_one_sided_window_rejected() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_port_traffic",
+            {"device_name": "SW-1", "port_name": "GE1", "start_time": "2026-07-29 10:00:00"},
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "together" in payload["detail"]
+
+
+async def test_sdn_link_performance_success() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_EMPTY_OK))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_link_performance", {"link_id": "L1"})
+    assert _payload(result)["ok"] is True
+
+
+async def test_sdn_vpn_traffic_success() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_EMPTY_OK))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_vpn_traffic", {"vpn_id": "l2_3510"})
+    assert _payload(result)["ok"] is True
+
+
+async def test_sdn_te_tunnel_traffic_success() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_EMPTY_OK))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_te_tunnel_traffic", {"device_name": "PE-1", "tunnel_name": "Tunnel5043"}
+        )
+    assert _payload(result)["ok"] is True
+
+
+async def test_sdn_operation_logs_success() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 0, "data": [{"id": "l1", "caller": "c"}]})
+
+    async with create_connected_server_and_client_session(_v15_server(handler)) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_operation_logs", {})
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["data"][0]["caller"] == "c"
+
+
+async def test_sdn_operation_logs_bad_page_rejected() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_operation_logs", {"page_size": 0})
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "page_size" in payload["detail"]
+
+
+async def test_sdn_device_alerts_success() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 0, "total": 2, "data": [{"id": "a1"}]})
+
+    async with create_connected_server_and_client_session(_v15_server(handler)) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_device_alerts", {"device_name": "NJ-SCT-R03"})
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["total"] == 2
+
+
+async def test_sdn_device_alerts_bad_auto_recovery_rejected() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_device_alerts", {"auto_recovery": 9})
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "auto_recovery" in payload["detail"]
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("sdn_device_by_name", {"name": "X"}),
+        ("sdn_device_by_management_ip", {"management_ip": "10.0.0.1"}),
+        ("sdn_link_info", {}),
+        ("sdn_topology", {}),
+        ("sdn_port_traffic", {"device_name": "X", "port_name": "P"}),
+        ("sdn_link_performance", {"link_id": "L"}),
+        ("sdn_vpn_traffic", {"vpn_id": "v"}),
+        ("sdn_te_tunnel_traffic", {"device_name": "X", "tunnel_name": "T"}),
+        ("sdn_operation_logs", {}),
+        ("sdn_device_alerts", {}),
+    ],
+)
+async def test_v15_tool_auth_error_is_sanitized(tool: str, args: dict[str, Any]) -> None:
+    server = _v15_server(lambda _r: httpx.Response(401))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(tool, args)
+    assert result.isError is False
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "https://sdn.example" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("sdn_device_by_name", {"name": "X"}),
+        ("sdn_device_by_management_ip", {"management_ip": "10.0.0.1"}),
+        ("sdn_link_info", {}),
+        ("sdn_topology", {}),
+        ("sdn_port_traffic", {"device_name": "X", "port_name": "P"}),
+        ("sdn_link_performance", {"link_id": "L"}),
+        ("sdn_vpn_traffic", {"vpn_id": "v"}),
+        ("sdn_te_tunnel_traffic", {"device_name": "X", "tunnel_name": "T"}),
+        ("sdn_operation_logs", {}),
+        ("sdn_device_alerts", {}),
+    ],
+)
+async def test_v15_tool_unexpected_error_does_not_leak(
+    tool: str, args: dict[str, Any]
+) -> None:
+    class BoomClient(SDNClient):
+        async def request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
+            raise RuntimeError("internal boom with sensitive http://secret/url")
+
+    settings = _basic_settings()
+
+    def factory() -> SDNClient:
+        return BoomClient(settings, login_transport=_login_transport())
+
+    mcp = build_server(settings, sdn_client_factory=factory)
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(tool, args)
     assert result.isError is False
     payload = _payload(result)
     assert payload == {"ok": False, "configured": False, "detail": "Unexpected server error."}

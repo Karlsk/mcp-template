@@ -15,9 +15,14 @@ sdn:
   # Named controller endpoints. Add business endpoints as the controller requires.
   endpoints:
     health: "/"
-    devices: "/devices"
-    topology: "/topology"
-    login: "/oauth/token"   # auth_type=basic: POSTed with {username,password,device_id} to obtain/refresh the token
-    alerts: "/monitor/v2/alert/page"   # paged device alerts (query_alerts)
+    login: "/oauth/token"   # auth_type=basic: POST {username,password,device_id} to obtain/refresh the token
+    alerts: "/monitor/v2/alert/page"                                                       # §3.5 paged alerts (query_alert_page)
+    devices_page: "/api/no/config/terra-pe:peInfos/page"                                   # §2.2 paged devices (query_devices)
+    links_page: "/api/sr/config/network-topology:network-topology/topology/linksInfo/page"  # §2.16 paged links (query_links)
+    topology: "/api/sr/config/network-topology:network-topology"                           # §3.7 full topology (get_topology)
+    perf_switch_history: "/monitor/switch/history"   # §3.2 port/link performance (query_switch_history)
+    perf_vpn_history: "/monitor/vpn/history"         # §3.3 VPN performance (query_vpn_history)
+    perf_te_history: "/monitor/te/history"           # §3.4 TE tunnel performance (query_te_history)
+    operation_logs: "/monitor/logs"                  # §3.12 paged operation logs (query_operation_logs)
   # auth_type=basic only: JSON key holding the bearer token in the login response.
   token_field: "access_token"

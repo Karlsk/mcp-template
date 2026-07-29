@@ -47,7 +47,15 @@ def test_yaml_loads_sdn_structure() -> None:
     assert settings.sdn.auth_type == "basic"
     assert settings.sdn.ssl_verify is False
     assert settings.sdn.endpoints.get("login") == "/oauth/token"
-    assert settings.sdn.endpoints.get("devices") == "/devices"
+    assert (
+        settings.sdn.endpoints.get("devices_page")
+        == "/api/no/config/terra-pe:peInfos/page"
+    )
+    assert (
+        settings.sdn.endpoints.get("topology")
+        == "/api/sr/config/network-topology:network-topology"
+    )
+    assert settings.sdn.endpoints.get("alerts") == "/monitor/v2/alert/page"
     assert settings.sdn.token_field == "access_token"
     assert settings.sdn.retry.max_retries == 3
 

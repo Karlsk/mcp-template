@@ -10,8 +10,22 @@ from mcp.server.fastmcp import FastMCP
 
 def register_all(mcp: FastMCP) -> None:
     """Register every tool module with the given FastMCP server."""
-    from . import sdn_tools, system
+    from . import (
+        alert_tools,
+        device_tools,
+        link_tools,
+        log_tools,
+        perf_tools,
+        sdn_tools,
+        system,
+        topology_tools,
+    )
 
     system.register(mcp)
     sdn_tools.register(mcp)
-    # TODO(sdn-wiring): register additional tool modules here.
+    device_tools.register(mcp)
+    link_tools.register(mcp)
+    topology_tools.register(mcp)
+    perf_tools.register(mcp)
+    log_tools.register(mcp)
+    alert_tools.register(mcp)

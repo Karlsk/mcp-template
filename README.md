@@ -22,8 +22,8 @@
   `basic` 用账号密码登录换 token）；`basic` 模式在 token 过期（401）时自动重新登录，
   业务代码无感知（统一走 `SDNClient._send`）。
 - **配置**（`app/settings.py`）：YAML 存非敏感结构、`.env`/环境变量存 secret（`SecretStr`）。
-- **工具**（`app/tools/`）：`ping`（验证 server）、`sdn_health`（验证 SDN 接缝）。
-- **测试**：38+ 用例，覆盖率 ≥96%，含内存传输（无需真起 HTTP）。
+- **工具**（`app/tools/`）：`ping`、`sdn_health`、`sdn_alerts`（旧桩）+ v1.5 工具（设备/链路/拓扑/性能/日志/告警查询，按域拆模块）。
+- **测试**：167 用例，覆盖率 ≥94%，含内存传输（无需真起 HTTP）。
 - **部署**（`deploy/`）：多阶段 Dockerfile + docker-compose。
 
 ## 架构
@@ -110,7 +110,7 @@ uv run python scripts/test_client.py call-tool --url http://127.0.0.1:8000/mcp \
 uv run python scripts/test_client.py call-tool --url http://127.0.0.1:8000/mcp --name sdn_health
 ```
 
-预期：`list-tools` 列出 `ping`、`sdn_health`；`ping` 返回 `pong: ...`；
+预期：`list-tools` 列出全部工具（`ping`、`sdn_health`、`sdn_alerts` + v1.5 设备/链路/拓扑/性能/日志/告警工具）；`ping` 返回 `pong: ...`；
 `sdn_health`（未配置）返回 `{ok: false, configured: false}`。
 
 ## 项目结构
@@ -125,12 +125,19 @@ sdn-mcp-template/
 │   │   ├── client.py            #     基于 HttpClient，错误映射为 SDNError
 │   │   ├── models.py            #     Pydantic 响应模型
 │   │   └── exceptions.py        #     SDNError 层级（安全 message）
-│   └── tools/                   #   MCP 工具
+│   └── tools/                   #   MCP 工具（按域拆模块，sdn_tools 仅留旧桩）
 │       ├── system.py            #     ping, sdn_health
-│       └── sdn_tools.py         #     SDN 查询工具（接入处）
+│       ├── sdn_tools.py         #     sdn_alerts（旧桩）
+│       ├── validation.py        #     共享校验 helper
+│       ├── device_tools.py      #     设备查询（按名/按管理IP）
+│       ├── link_tools.py        #     链路查询
+│       ├── topology_tools.py    #     拓扑
+│       ├── perf_tools.py        #     端口/链路/VPN/TE 性能
+│       ├── log_tools.py         #     操作日志
+│       └── alert_tools.py       #     告警查询（§3.5）
 ├── config/sdn_controller.yaml   # SDN 非敏感配置
 ├── scripts/test_client.py       # 测试 MCP client
-├── tests/                       # 测试套件（覆盖率 ≥96%）
+├── tests/                       # 测试套件（覆盖率 ≥94%）
 └── deploy/                      # Dockerfile + docker-compose
 ```
 

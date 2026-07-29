@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 
 import httpx
 import pytest
 from pydantic import SecretStr
 
-from app.sdn.client import SDNClient
+from app.sdn.client import PERF_TIME_FORMAT, SDNClient, _default_time_window
 from app.sdn.exceptions import (
     SDNAuthError,
     SDNConfigError,
@@ -18,7 +19,15 @@ from app.sdn.exceptions import (
     SDNHTTPError,
     SDNNotFoundError,
 )
-from app.sdn.models import SDNAlertsResponse
+from app.sdn.models import (
+    Device,
+    LinkInfo,
+    OperationLogsResponse,
+    PageResponse,
+    PerfHistoryResponse,
+    SDNAlertsResponse,
+    TopologyResponse,
+)
 from app.settings import RetrySettings, SdnSettings, Settings
 
 BASE_URL = "https://sdn.example"
@@ -656,3 +665,400 @@ async def test_query_alerts_refreshes_token_on_401() -> None:
     assert result.total == 1
     assert main_calls() == 2  # 401 + retry
     assert login_calls() == 2  # init + one refresh
+
+
+# ---------------------------------------------------------------------------
+# v1.5 business methods (appended to SDNClient; query_alerts above unchanged)
+# ---------------------------------------------------------------------------
+
+
+def _capturing_handler(payload: object, seen: dict[str, object]) -> httpx.MockTransport:
+    """MockTransport that records method/path/params/body and returns ``payload``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = str(request.url.path)
+        seen["params"] = dict(request.url.params)
+        try:
+            seen["body"] = json.loads(request.content)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            seen["body"] = None
+        return httpx.Response(200, json=payload)
+
+    return httpx.MockTransport(handler)
+
+
+def _status_handler_for_body(content: bytes) -> httpx.MockTransport:
+    """MockTransport returning a 200 with a raw (non-JSON) body, for malformed tests."""
+    return httpx.MockTransport(lambda _r: httpx.Response(200, content=content))
+
+
+def test_default_time_window_fixed_now() -> None:
+    start, end = _default_time_window(now=datetime(2026, 7, 29, 12, 0, 0))
+    assert start == "2026-07-29 11:00:00"
+    assert end == "2026-07-29 12:00:00"
+
+
+def test_default_time_window_custom_span() -> None:
+    start, end = _default_time_window(timedelta(days=1), now=datetime(2026, 7, 29, 12, 0, 0))
+    assert start == "2026-07-28 12:00:00"
+    assert end == "2026-07-29 12:00:00"
+
+
+# --- query_devices (§2.2) --------------------------------------------------
+
+
+async def test_query_devices_builds_body_and_strips_password() -> None:
+    seen: dict[str, object] = {}
+    transport = _capturing_handler(
+        {
+            "content": [
+                {"id": "d1", "name": "n1", "management-ip": "10.0.0.1", "password": "secret"}
+            ]
+        },
+        seen,
+    )
+    client = SDNClient(make_settings(), transport=transport)
+    try:
+        result = await client.query_devices(name="X", pe_as="15200", page_size=5)
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, PageResponse)
+    device = result.content[0]
+    assert isinstance(device, Device)
+    assert device.management_ip == "10.0.0.1"
+    dumped = device.model_dump(by_alias=True)
+    assert "password" not in dumped
+    # wire contract: POST, controller keys, peAs camelCase, None filters omitted
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/no/config/terra-pe:peInfos/page"
+    assert seen["params"] == {"pageNumber": "1", "pageSize": "5"}
+    assert seen["body"] == {"name": "X", "peAs": "15200"}
+
+
+async def test_query_devices_uses_configured_endpoint() -> None:
+    sdn = SdnSettings(
+        base_url=BASE_URL,
+        auth_type="bearer",
+        timeout=1.0,
+        retry=RetrySettings(max_retries=0, base_delay=0.0, max_delay=0.0),
+        endpoints={"health": "/", "devices_page": "/custom/devices"},
+    )
+    settings = Settings(sdn=sdn, sdn_controller_token=SecretStr("tok"))
+    seen: dict[str, object] = {}
+    client = SDNClient(settings, transport=_capturing_handler({"content": []}, seen))
+    try:
+        await client.query_devices()
+    finally:
+        await client.aclose()
+    assert seen["path"] == "/custom/devices"
+
+
+async def test_query_devices_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.query_devices()
+    finally:
+        await client.aclose()
+
+
+async def test_query_devices_server_error_raises_http_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler(500))
+    try:
+        with pytest.raises(SDNHTTPError):
+            await client.query_devices()
+    finally:
+        await client.aclose()
+
+
+# --- query_links (§2.16) ---------------------------------------------------
+
+
+async def test_query_links_converts_page_num_and_omits_none() -> None:
+    seen: dict[str, object] = {}
+    transport = _capturing_handler(
+        {"content": [{"link-id": "L1", "link-status": "UP"}], "total_elements": 1, "number": 1},
+        seen,
+    )
+    client = SDNClient(make_settings(), transport=transport)
+    try:
+        result = await client.query_links(page_num=2, link_id="L1")
+    finally:
+        await client.aclose()
+
+    link = result.content[0]
+    assert isinstance(link, LinkInfo)
+    assert link.link_id == "L1"
+    assert seen["method"] == "GET"
+    assert seen["path"] == (
+        "/api/sr/config/network-topology:network-topology/topology/linksInfo/page"
+    )
+    params = seen["params"]
+    assert params["page"] == "1"  # 1-based page_num=2 -> 0-based page=1
+    assert params["size"] == "10"
+    assert params["linkId"] == "L1"
+    assert "linkErr" not in params  # None filtered out (httpx would else emit "")
+
+
+async def test_query_links_serializes_bool_filter() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler({"content": []}, seen))
+    try:
+        await client.query_links(link_err=True)
+    finally:
+        await client.aclose()
+    assert seen["params"]["linkErr"] == "true"
+
+
+async def test_query_links_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.query_links()
+    finally:
+        await client.aclose()
+
+
+# --- performance history (§3.2 / §3.3 / §3.4) ------------------------------
+
+
+def _perf_payload() -> dict[str, object]:
+    return {"code": 0, "message": "ok", "data": [{"time": "t", "in_traffic": 1.0}]}
+
+
+async def test_query_switch_history_port_dimensions() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_perf_payload(), seen))
+    try:
+        result = await client.query_switch_history(
+            "port",
+            metric_names=["in_traffic", "out_traffic"],
+            device_name="SW-1",
+            port_name="GE1",
+            start_time="2026-07-29 10:00:00",
+            end_time="2026-07-29 11:00:00",
+        )
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, PerfHistoryResponse)
+    assert result.data[0].time == "t"
+    params = seen["params"]
+    assert seen["path"] == "/monitor/switch/history"
+    assert params["namespace"] == "port"
+    assert params["metricNames"] == "in_traffic,out_traffic"
+    assert params["dimensions.0.name"] == "switch"
+    assert params["dimensions.0.value"] == "SW-1"
+    assert params["dimensions.1.name"] == "port"
+    assert params["dimensions.1.value"] == "GE1"
+    assert params["startTime"] == "2026-07-29 10:00:00"
+    assert params["endTime"] == "2026-07-29 11:00:00"
+
+
+async def test_query_switch_history_link_dimensions() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_perf_payload(), seen))
+    try:
+        await client.query_switch_history(
+            "link", metric_names=["jitter"], link_id="L1",
+            start_time="s", end_time="e",
+        )
+    finally:
+        await client.aclose()
+    params = seen["params"]
+    assert params["namespace"] == "link"
+    assert params["dimensions.0.name"] == "linkId"
+    assert params["dimensions.0.value"] == "L1"
+
+
+async def test_query_switch_history_port_requires_device_and_port() -> None:
+    client = SDNClient(make_settings(), transport=_capturing_handler(_perf_payload(), {}))
+    try:
+        with pytest.raises(SDNError):
+            await client.query_switch_history(
+                "port", metric_names=["in_traffic"], device_name="SW-1",
+                start_time="s", end_time="e",
+            )
+    finally:
+        await client.aclose()
+
+
+async def test_query_switch_history_default_window_is_last_hour() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_perf_payload(), seen))
+    try:
+        await client.query_switch_history(
+            "port", metric_names=["in_traffic"], device_name="SW-1", port_name="GE1",
+        )
+    finally:
+        await client.aclose()
+    start = datetime.strptime(seen["params"]["startTime"], PERF_TIME_FORMAT)
+    end = datetime.strptime(seen["params"]["endTime"], PERF_TIME_FORMAT)
+    assert end - start == timedelta(hours=1)
+
+
+async def test_query_vpn_history_dimensions() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_perf_payload(), seen))
+    try:
+        await client.query_vpn_history(
+            "l2_3510", metric_names=["in_traffic", "out_traffic"], start_time="s", end_time="e",
+        )
+    finally:
+        await client.aclose()
+    assert seen["path"] == "/monitor/vpn/history"
+    params = seen["params"]
+    assert params["namespace"] == "traffic"
+    assert params["dimensions.0.name"] == "vpnId"
+    assert params["dimensions.0.value"] == "l2_3510"
+
+
+async def test_query_te_history_dimensions() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_perf_payload(), seen))
+    try:
+        await client.query_te_history(
+            "PE-1", "Tunnel5043", metric_names=["in_traffic"], start_time="s", end_time="e",
+        )
+    finally:
+        await client.aclose()
+    assert seen["path"] == "/monitor/te/history"
+    params = seen["params"]
+    assert params["namespace"] == "traffic"
+    assert params["dimensions.0.name"] == "deviceName"
+    assert params["dimensions.0.value"] == "PE-1"
+    assert params["dimensions.1.name"] == "tunnelName"
+    assert params["dimensions.1.value"] == "Tunnel5043"
+
+
+# --- query_alert_page (§3.5, NEW; reuses SDNAlertsResponse) ----------------
+
+
+async def test_query_alert_page_default_body_has_window_and_no_optionals() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_alerts_body(), seen))
+    try:
+        result = await client.query_alert_page()
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, SDNAlertsResponse)
+    assert seen["path"] == "/monitor/v2/alert/page"
+    body = seen["body"]
+    assert set(body) == {"startTime", "endTime", "pageNum", "pageSize"}
+    assert body["pageNum"] == 1
+    assert body["pageSize"] == 10
+
+
+async def test_query_alert_page_includes_optionals_when_set() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler(_alerts_body(), seen))
+    try:
+        await client.query_alert_page(
+            namespace="device",
+            category="ISIS邻居Down",
+            source_list=["NJ-SCT-R03"],
+            auto_recovery=1,
+            msg="PolicyPath",
+            level="CRITICAL",
+        )
+    finally:
+        await client.aclose()
+    body = seen["body"]
+    assert body["namespace"] == "device"
+    assert body["category"] == "ISIS邻居Down"
+    assert body["sourceList"] == ["NJ-SCT-R03"]
+    assert body["autoRecovery"] == 1
+    assert body["msg"] == "PolicyPath"
+    assert body["level"] == "CRITICAL"
+
+
+async def test_query_alert_page_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.query_alert_page()
+    finally:
+        await client.aclose()
+
+
+# --- get_topology (§3.7) ---------------------------------------------------
+
+
+async def test_get_topology_parses_response() -> None:
+    seen: dict[str, object] = {}
+    payload = {"topology": [{"topology-id": "t1", "node": [], "link": []}]}
+    client = SDNClient(make_settings(), transport=_capturing_handler(payload, seen))
+    try:
+        result = await client.get_topology()
+    finally:
+        await client.aclose()
+    assert isinstance(result, TopologyResponse)
+    assert result.topology[0].topology_id == "t1"
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/api/sr/config/network-topology:network-topology"
+
+
+async def test_get_topology_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.get_topology()
+    finally:
+        await client.aclose()
+
+
+# --- query_operation_logs (§3.12) ------------------------------------------
+
+
+async def test_query_operation_logs_builds_params_and_parses() -> None:
+    seen: dict[str, object] = {}
+    payload = {
+        "code": 0,
+        "message": "ok",
+        "data": [{"id": "l1", "time": "t", "caller": "c"}],
+    }
+    client = SDNClient(make_settings(), transport=_capturing_handler(payload, seen))
+    try:
+        result = await client.query_operation_logs(
+            start_time="2026-04-21 15:53:46",
+            end_time="2026-04-21 16:53:46",
+            page_num=2,
+            page_size=5,
+        )
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, OperationLogsResponse)
+    assert result.data[0].caller == "c"
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/monitor/logs"
+    assert seen["params"] == {
+        "startTime": "2026-04-21 15:53:46",
+        "endTime": "2026-04-21 16:53:46",
+        "pageNum": "2",
+        "pageSize": "5",
+    }
+
+
+async def test_query_operation_logs_default_window() -> None:
+    seen: dict[str, object] = {}
+    client = SDNClient(make_settings(), transport=_capturing_handler({"data": []}, seen))
+    try:
+        await client.query_operation_logs()
+    finally:
+        await client.aclose()
+    start = datetime.strptime(seen["params"]["startTime"], PERF_TIME_FORMAT)
+    end = datetime.strptime(seen["params"]["endTime"], PERF_TIME_FORMAT)
+    assert end - start == timedelta(hours=1)
+
+
+async def test_query_operation_logs_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.query_operation_logs()
+    finally:
+        await client.aclose()

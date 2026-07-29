@@ -23,7 +23,7 @@
   业务代码无感知（统一走 `SDNClient._send`）。
 - **配置**（`app/settings.py`）：YAML 存非敏感结构、`.env`/环境变量存 secret（`SecretStr`）。
 - **工具**（`app/tools/`）：`ping`、`sdn_health`、`sdn_alerts`（旧桩）+ v1.5 工具（设备/链路/拓扑/性能/日志/告警查询，按域拆模块）。
-- **测试**：167 用例，覆盖率 ≥94%，含内存传输（无需真起 HTTP）。
+- **测试**：209 用例，覆盖率 ≥97%，含内存传输（无需真起 HTTP）。
 - **部署**（`deploy/`）：多阶段 Dockerfile + docker-compose。
 
 ## 架构
@@ -134,10 +134,11 @@ sdn-mcp-template/
 │       ├── topology_tools.py    #     拓扑
 │       ├── perf_tools.py        #     端口/链路/VPN/TE 性能
 │       ├── log_tools.py         #     操作日志
-│       └── alert_tools.py       #     告警查询（§3.5）
+│       ├── alert_tools.py       #     告警查询（§3.5）
+│       └── cmd_tools.py         #     设备命令（默认只读）
 ├── config/sdn_controller.yaml   # SDN 非敏感配置
 ├── scripts/test_client.py       # 测试 MCP client
-├── tests/                       # 测试套件（覆盖率 ≥94%）
+├── tests/                       # 测试套件（覆盖率 ≥97%）
 └── deploy/                      # Dockerfile + docker-compose
 ```
 

@@ -276,3 +276,15 @@ class OperationLogsResponse(BaseModel):
     code: int = 0
     message: str = ""
     data: list[OperationLog] = Field(default_factory=list)
+
+
+class CommandResultResponse(BaseModel):
+    """Result of a device CLI command (POST /api/no/config/device-conf/command-result).
+
+    The endpoint is not in the v1.5 spec; ``result`` holds the raw device output
+    text (line endings preserved verbatim). Other fields, if any, ride extras.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    result: str = ""

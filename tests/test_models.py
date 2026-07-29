@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from app.sdn.models import (
+    CommandResultResponse,
     Device,
     LinkInfo,
     OperationLog,
@@ -373,3 +374,19 @@ def test_operation_logs_parses_camel_case_and_extras() -> None:
     assert dumped["behaveAs"] == "ADMIN"
     assert dumped["fromIp"] == "100.127.228.112"
     assert dumped["retMsg"] == '{"vpnId":"l3_3171"}'
+
+
+# --- Command result ---------------------------------------------------------
+
+
+def test_command_result_response_parses_result() -> None:
+    resp = CommandResultResponse.model_validate({"result": "dis ip in br\r\r\nGE4/1/1 up"})
+    assert resp.result.startswith("dis ip in br")
+    # output text is preserved verbatim (no line-ending normalization)
+    assert "\r\r\n" in resp.result
+
+
+def test_command_result_response_defaults_and_extras() -> None:
+    resp = CommandResultResponse.model_validate({"result": "ok", "code": 0})
+    assert resp.result == "ok"
+    assert resp.model_dump()["code"] == 0  # extra field preserved

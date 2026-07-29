@@ -34,7 +34,7 @@
 ```bash
 uv sync                 # 安装运行 + dev 依赖
 uv run sdn-mcp          # 启动 server（默认 127.0.0.1:8000，/mcp）
-uv run pytest           # 167 个用例，--cov-fail-under=80（当前覆盖率 ~94%）
+uv run pytest           # 209 个用例，--cov-fail-under=80（当前覆盖率 ~97%）
 uv run ruff check .     # lint
 uv run mypy             # 类型检查（pyproject 已配置 packages=["app"]）
 make docker-up          # Docker 构建并启动（见 deploy/）
@@ -48,7 +48,8 @@ sdn-mcp-template/
 │   ├── server.py                 # FastMCP 工厂 + per-session lifespan + CLI 入口 (main)
 │   ├── settings.py               # pydantic-settings：YAML(非敏感结构) + env/.env(secrets) 合并
 │   ├── common/
-│   │   └── http.py               # 通用 HttpClient：retry / auth / REST 封装（与 SDN 无关）
+│   │   ├── http.py               # 通用 HttpClient：retry / auth / REST 封装 + 请求/响应日志（与 SDN 无关）
+│   │   └── logging.py            # 统一日志：JSON 结构化，setup_logging 由 MCP_LOG_LEVEL 驱动 app.* logger
 │   ├── sdn/                      # SDN 集成层
 │   │   ├── client.py             # SDNClient：业务方法 + token 生命周期 + 错误映射
 │   │   ├── models.py             # Pydantic 响应模型（边界校验，纯数据）
@@ -63,7 +64,8 @@ sdn-mcp-template/
 │       ├── topology_tools.py     # sdn_topology
 │       ├── perf_tools.py         # sdn_port_traffic / link_performance / vpn / te_tunnel
 │       ├── log_tools.py          # sdn_operation_logs
-│       └── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
+│       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
+│       └── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
 ├── config/sdn_controller.yaml    # SDN 非敏感配置（endpoints / timeout / retry / auth_type）
 ├── scripts/
 │   ├── test_client.py            # MCP 测试客户端（list-tools / call-tool）
@@ -161,6 +163,9 @@ MCP tool 函数 (app/tools/*.py)
 | `HttpClientConfig.timeout` | `30.0` 秒 | 传给 httpx 的整体超时；SDN 层来自 `sdn.timeout`（YAML） |
 | `HttpClientConfig.ssl_verify` | `True` | 自签名证书在 YAML 设 `sdn.ssl_verify: false` |
 | `HttpClientConfig.transport` | `None` | 注入 `httpx.MockTransport` 做单测的关键接缝 |
+| `HttpClientConfig.log_bodies` | `False` | 成功路径记录请求/响应体（DEBUG，已脱敏+截断）；**错误**响应体始终在 WARNING 记录（脱敏），不受此开关影响 |
+| `HttpClientConfig.body_log_limit` | `2048` | 单条 body 日志的字符截断上限 |
+| `HttpClientConfig.extra_sensitive_keys` | `()` | 内置敏感词之外额外需脱敏的 JSON 键（登录客户端注入 `token_field`） |
 | `RetryConfig.max_retries` | `3` | 最多重试 3 次 → 合计 **4 次尝试** |
 | `RetryConfig.base_delay` | `1.0` 秒 | 指数退避基数 |
 | `RetryConfig.max_delay` | `30.0` 秒 | 单次等待上限 |
@@ -179,7 +184,7 @@ MCP tool 函数 (app/tools/*.py)
 - REST 封装：`get/post/put/patch/delete/head`，全部经 `_request` 统一重试。
 - `set_bearer_token(token)`：在**不重建** live client 的前提下热轮换 Authorization 头（SDNClient token 刷新依赖它）。
 - 支持 `async with HttpClient(...) as c:` 上下文管理；`close()` 幂等。
-- 安全提示：重试日志 `logger.warning` 含 `str(exc)`（内含 URL），仅服务端可见；**不要**把该日志转发到模型可读通道。
+- 请求/响应日志（`_request` 内，结构化事件，仅服务端 stderr）：每次尝试发 `http_request`/`http_response`（DEBUG）或 `http_error`（WARNING），`extra` 字段含 `method`/`url`/`attempt`/`status`/`elapsed_ms` 等。URL 仅作结构化字段、header 从不记录；HTTP 错误自动记脱敏+截断响应体（Hybrid 策略），成功路径体需 `log_bodies=True` 且 DEBUG 才记，敏感键（password/token/authorization/…）一律脱敏。**不要**把这些日志转发到模型可读通道（SDN 层已对模型脱敏）。
 
 ## 7. Token 重试机制（`app/sdn/client.py`，basic 模式）
 
@@ -255,7 +260,7 @@ MCP tool 函数 (app/tools/*.py)
 
 同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §9）。
 
-> v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。
+> v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
 
 ### 8.2 接入一个全新类型的控制器
 
@@ -301,7 +306,7 @@ uv run python scripts/test_client.py call-tool --url http://127.0.0.1:8000/mcp -
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `8000` | Streamable HTTP 绑定地址（CLI `--host/--port` 可覆盖） |
-| `MCP_LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL |
+| `MCP_LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL；同时驱动 `app.*` 的 JSON 结构化日志（`app/common/logging.py::setup_logging`，`main()` 启动时调用，每行一个 JSON 对象输出到 stderr） |
 | `MCP_DNS_REBINDING_PROTECTION` | `false` | 默认关闭以便 Cherry Studio/Cursor 等 Electron 客户端直连；公网/反代部署时设 `true` |
 | `SDN_CONTROLLER_BASE_URL` | 空 | 控制器地址；**env 优先于 YAML**；空 = 骨架模式 |
 | `SDN_CONTROLLER_USERNAME` / `SDN_CONTROLLER_PASSWORD` | — | basic 模式凭证（`SecretStr`，仅 env/.env） |
@@ -321,3 +326,4 @@ make docker-build | docker-up | docker-stop | docker-restart | docker-ps | docke
 - `uv run sdn-mcp` 报 `ModuleNotFoundError: No module named 'app'`：editable 安装的 `.pth` 在某些 Python 构建上不加载。修复：`rm -rf .venv && uv venv && uv sync`，或 `uv pip install .`，或 `uv run python -m app.server`（见 README「排错」）。
 - 启动即 `SDNConfigError`：`auth_type=basic` 但缺 username/password/`endpoints.login`——按提示补齐 `.env` 与 YAML。
 - GUI 客户端连不上：确认 `MCP_DNS_REBINDING_PROTECTION=false`（默认）且地址端口正确。
+- 排障 SDN 调用错误：`MCP_LOG_LEVEL=DEBUG` 启动后，stderr 可见每次请求的 `http_request`/`http_response`（DEBUG，含 status/elapsed）；HTTP 错误的脱敏响应体在 WARNING 自动输出。需要看成功路径的请求/响应体时，再在 YAML 设 `sdn.http_log_bodies: true`（敏感键已脱敏，DEBUG 才输出）。

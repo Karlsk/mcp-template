@@ -34,7 +34,7 @@
 ```bash
 uv sync                 # 安装运行 + dev 依赖
 uv run sdn-mcp          # 启动 server（默认 127.0.0.1:8000，/mcp）
-uv run pytest           # 167 个用例，--cov-fail-under=80（当前覆盖率 ~94%）
+uv run pytest           # 209 个用例，--cov-fail-under=80（当前覆盖率 ~97%）
 uv run ruff check .     # lint
 uv run mypy             # 类型检查（pyproject 已配置 packages=["app"]）
 make docker-up          # Docker 构建并启动（见 deploy/）
@@ -64,7 +64,8 @@ sdn-mcp-template/
 │       ├── topology_tools.py     # sdn_topology
 │       ├── perf_tools.py         # sdn_port_traffic / link_performance / vpn / te_tunnel
 │       ├── log_tools.py          # sdn_operation_logs
-│       └── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
+│       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
+│       └── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
 ├── config/sdn_controller.yaml    # SDN 非敏感配置（endpoints / timeout / retry / auth_type）
 ├── scripts/
 │   ├── test_client.py            # MCP 测试客户端（list-tools / call-tool）
@@ -259,7 +260,7 @@ MCP tool 函数 (app/tools/*.py)
 
 同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §9）。
 
-> v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。
+> v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
 
 ### 8.2 接入一个全新类型的控制器
 

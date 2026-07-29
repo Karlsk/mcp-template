@@ -43,6 +43,7 @@ from app.sdn.exceptions import (
     SDNNotFoundError,
 )
 from app.sdn.models import (
+    CommandResultResponse,
     Device,
     LinkInfo,
     OperationLogsResponse,
@@ -621,6 +622,23 @@ class SDNClient:
             return OperationLogsResponse.model_validate(resp.json())
         except (ValueError, ValidationError) as exc:
             raise SDNError("SDN operation logs response was malformed.", detail=str(exc)) from exc
+
+    async def run_command(self, device_name: str, command: str) -> CommandResultResponse:
+        """Run a CLI command on a device (POST command-result endpoint).
+
+        Enforcing a read-only policy is the caller's (tool-layer) job; this sends
+        the command as given and parses the textual result.
+        """
+        endpoint = self._settings.sdn.endpoints.get(
+            "command_result", "/api/no/config/device-conf/command-result"
+        )
+        resp = await self.request(
+            "POST", endpoint, json={"device_name": device_name, "command": command}
+        )
+        try:
+            return CommandResultResponse.model_validate(resp.json())
+        except (ValueError, ValidationError) as exc:
+            raise SDNError("SDN command-result response was malformed.", detail=str(exc)) from exc
 
     async def aclose(self) -> None:
         """Release the underlying HTTP clients. Idempotent."""

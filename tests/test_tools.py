@@ -645,3 +645,102 @@ async def test_v15_tool_unexpected_error_does_not_leak(
     payload = _payload(result)
     assert payload == {"ok": False, "configured": False, "detail": "Unexpected server error."}
     assert "secret" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# sdn_run_command tool (POST /api/no/config/device-conf/command-result)
+# ---------------------------------------------------------------------------
+
+
+async def test_sdn_run_command_readonly_success() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"result": "uptime 1 day"})
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_run_command", {"device_name": "NJ-SCT-R01", "command": "display version"}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["result"] == "uptime 1 day"
+
+
+async def test_sdn_run_command_rejects_non_readonly_without_calling_client() -> None:
+    called = {"n": 0}
+
+    def handler(_r: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200, json={"result": "x"})
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_run_command", {"device_name": "NJ-SCT-R01", "command": "reboot"}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "allow_write" in payload["detail"]
+    assert called["n"] == 0  # guard rejected before any controller call
+
+
+async def test_sdn_run_command_allow_write_runs_any_command() -> None:
+    def handler(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"result": "done"})
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_run_command",
+            {"device_name": "NJ-SCT-R01", "command": "reboot", "allow_write": True},
+        )
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["result"] == "done"
+
+
+@pytest.mark.parametrize(
+    ("args",),
+    [
+        ({"device_name": "", "command": "display version"},),
+        ({"device_name": "NJ-SCT-R01", "command": "  "},),
+    ],
+)
+async def test_sdn_run_command_empty_inputs_rejected(args: dict[str, Any]) -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json={"result": "x"}))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_run_command", args)
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "must not be empty" in payload["detail"]
+
+
+async def test_sdn_run_command_skeleton_mode() -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_run_command", {"device_name": "X", "command": "display version"}
+        )
+    assert _payload(result) == {
+        "ok": False,
+        "configured": False,
+        "detail": "SDN controller not configured (skeleton mode).",
+    }
+
+
+async def test_sdn_run_command_auth_error_is_sanitized() -> None:
+    server = _v15_server(lambda _r: httpx.Response(401))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_run_command", {"device_name": "X", "command": "display version"}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "https://sdn.example" not in json.dumps(payload)

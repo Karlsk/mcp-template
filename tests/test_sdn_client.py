@@ -20,6 +20,7 @@ from app.sdn.exceptions import (
     SDNNotFoundError,
 )
 from app.sdn.models import (
+    CommandResultResponse,
     Device,
     LinkInfo,
     OperationLogsResponse,
@@ -1104,3 +1105,32 @@ async def test_business_request_sends_content_type_on_bodyless_get() -> None:
     finally:
         await client.aclose()
     assert seen["content_type"] == "application/json"
+
+
+# --- run_command (POST /api/no/config/device-conf/command-result) -----------
+
+
+async def test_run_command_posts_body_and_parses_result() -> None:
+    seen: dict[str, object] = {}
+    transport = _capturing_handler({"result": "dis ip in br\r\r\nGE4/1/1 up"}, seen)
+    client = SDNClient(make_settings(), transport=transport)
+    try:
+        result = await client.run_command("NJ-SCT-R01", "dis ip in br")
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, CommandResultResponse)
+    assert result.result.startswith("dis ip in br")
+    # wire contract: POST, the documented endpoint, snake_case body keys
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/no/config/device-conf/command-result"
+    assert seen["body"] == {"device_name": "NJ-SCT-R01", "command": "dis ip in br"}
+
+
+async def test_run_command_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.run_command("NJ-SCT-R01", "display version")
+    finally:
+        await client.aclose()

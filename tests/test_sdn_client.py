@@ -1082,3 +1082,25 @@ async def test_business_request_sends_accept_json_header() -> None:
     finally:
         await client.aclose()
     assert seen["accept"] == "application/json"
+
+
+async def test_business_request_sends_content_type_on_bodyless_get() -> None:
+    """Bodyless GETs also carry Content-Type: application/json.
+
+    The controller's /api/* config module enforces Content-Type on every
+    method (415 Unsupported Media Type without it), even on a GET with no body.
+    httpx only auto-adds Content-Type when a body is present, so it is injected
+    once in the request() primitive alongside Accept.
+    """
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(200, json={"topology": []})
+
+    client = SDNClient(make_settings(), transport=httpx.MockTransport(handler))
+    try:
+        await client.get_topology()
+    finally:
+        await client.aclose()
+    assert seen["content_type"] == "application/json"

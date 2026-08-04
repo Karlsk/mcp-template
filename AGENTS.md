@@ -65,7 +65,12 @@ sdn-mcp-template/
 │       ├── perf_tools.py         # sdn_port_traffic / link_performance / vpn / te_tunnel
 │       ├── log_tools.py          # sdn_operation_logs
 │       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
-│       └── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
+│       ├── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
+│       ├── sop_tools.py          # search_sop（占位，spec-03 落实现）
+│       ├── template_tools.py     # search_command_template（占位，spec-04 落实现）
+│       ├── graph_tools.py        # get_fault_subgraph / get_topology_snapshot（占位）
+│       ├── config_tools.py       # get_config_diff（占位）
+│       └── change_tools.py       # get_change_history（占位）
 ├── config/sdn_controller.yaml    # SDN 非敏感配置（endpoints / timeout / retry / auth_type）
 ├── scripts/
 │   ├── test_client.py            # MCP 测试客户端（list-tools / call-tool）
@@ -261,6 +266,8 @@ MCP tool 函数 (app/tools/*.py)
 同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §9）。
 
 > v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
+
+> **占位工具约定（spec-01）**：数据源未接入的工具先钉注册面——按最终签名注册，函数体只做参数校验并返回 `validation.not_implemented_payload(hint)`（`{ok: false, configured: false, detail: "Tool is registered but not implemented yet."}`，`hint` 点名待接入数据源）；占位阶段不加 `ctx` 与两层 except（无 IO、避免不可达分支）。落实现时只替换函数体并按 §5 补两层兜底，**参数名不得再改**。
 
 ### 8.2 接入一个全新类型的控制器
 

@@ -17,6 +17,7 @@ MAX_PAGE_SIZE = 100
 
 SKELETON_DETAIL = "SDN controller not configured (skeleton mode)."
 UNEXPECTED_DETAIL = "Unexpected server error."
+NOT_IMPLEMENTED_DETAIL = "Tool is registered but not implemented yet."
 
 
 def page_bounds_detail(page_num: int, page_size: int) -> str | None:
@@ -25,6 +26,13 @@ def page_bounds_detail(page_num: int, page_size: int) -> str | None:
         return f"page_num must be >= 1 (got {page_num})"
     if not 1 <= page_size <= MAX_PAGE_SIZE:
         return f"page_size must be in [1, {MAX_PAGE_SIZE}] (got {page_size})"
+    return None
+
+
+def positive_bound_detail(name: str, value: int, maximum: int) -> str | None:
+    """Return a safe error detail if ``value`` is outside [1, maximum], else None."""
+    if not 1 <= value <= maximum:
+        return f"{name} must be in [1, {maximum}] (got {value})"
     return None
 
 
@@ -57,3 +65,20 @@ def skeleton_payload() -> dict[str, object]:
 def unexpected_payload() -> dict[str, object]:
     """Envelope returned for any non-SDNError failure (catch-all, no leak)."""
     return {"ok": False, "configured": False, "detail": UNEXPECTED_DETAIL}
+
+
+def not_implemented_payload(hint: str | None = None) -> dict[str, object]:
+    """Envelope returned by a registered-but-unimplemented tool.
+
+    ``configured`` is False because no backing data source is wired yet. The
+    optional ``hint`` names the pending data source so the agent can explain the
+    gap instead of retrying.
+    """
+    payload: dict[str, object] = {
+        "ok": False,
+        "configured": False,
+        "detail": NOT_IMPLEMENTED_DETAIL,
+    }
+    if hint:
+        payload["hint"] = hint
+    return payload

@@ -1,0 +1,89 @@
+# Command template library (NON-SECRET, safe to commit).
+# Layout: templates.<action>.vendors.<vendor>.command
+#   <action> matches the SOP graph's Step.action verbatim (see docs/spec-03).
+#   <vendor> is lowercase; `default` is the fallback used when the requested
+#   vendor has no entry. Placeholders are `{name}` and are NOT rendered by the
+#   server — search_command_template returns them for the caller to fill.
+# Override the file path with COMMAND_TEMPLATE_FILE.
+
+templates:
+  verify_interface_state:
+    name: 检查接口状态
+    observation: oper_state
+    vendors:
+      huawei:  { command: "display interface {interface} brief" }
+      h3c:     { command: "display interface {interface} brief" }
+      cisco:   { command: "show interface {interface} status" }
+      default: { command: "show interface {interface}" }
+
+  check_interface_errors:
+    name: 检查接口错包与 CRC
+    observation: error_counters
+    vendors:
+      huawei:  { command: "display interface {interface}" }
+      h3c:     { command: "display counters inbound interface {interface}" }
+      cisco:   { command: "show interface {interface} counters errors" }
+      default: { command: "show interface {interface}" }
+
+  check_optical_power:
+    name: 检查光模块收发光功率
+    observation: rx_power
+    vendors:
+      huawei:  { command: "display transceiver interface {interface} verbose" }
+      h3c:     { command: "display transceiver diagnosis interface {interface}" }
+      cisco:   { command: "show interface {interface} transceiver detail" }
+      default: { command: "show transceiver {interface}" }
+
+  check_bgp_neighbor:
+    name: 检查 BGP 邻居状态
+    observation: bgp_state
+    vendors:
+      huawei:  { command: "display bgp peer {neighbor_ip} verbose" }
+      h3c:     { command: "display bgp peer ipv4 {neighbor_ip} verbose" }
+      cisco:   { command: "show bgp ipv4 unicast neighbors {neighbor_ip}" }
+      default: { command: "show bgp neighbor {neighbor_ip}" }
+
+  check_isis_neighbor:
+    name: 检查 ISIS 邻居状态
+    observation: isis_state
+    vendors:
+      huawei:  { command: "display isis peer verbose" }
+      h3c:     { command: "display isis peer verbose" }
+      cisco:   { command: "show isis neighbors detail" }
+      default: { command: "show isis neighbor" }
+
+  check_route:
+    name: 检查路由表项
+    observation: next_hop
+    vendors:
+      huawei:  { command: "display ip routing-table {prefix}" }
+      h3c:     { command: "display ip routing-table {prefix}" }
+      cisco:   { command: "show ip route {prefix}" }
+      default: { command: "show ip route {prefix}" }
+
+  check_cpu_memory:
+    name: 检查 CPU 与内存占用
+    observation: cpu_usage
+    vendors:
+      huawei:  { command: "display cpu-usage" }
+      h3c:     { command: "display cpu-usage summary" }
+      cisco:   { command: "show processes cpu sorted" }
+      default: { command: "show cpu" }
+
+  check_device_log:
+    name: 检查设备日志
+    observation: log_entries
+    vendors:
+      huawei:  { command: "display logbuffer" }
+      h3c:     { command: "display logbuffer" }
+      cisco:   { command: "show logging last 100" }
+      default: { command: "show log" }
+
+  check_te_tunnel:
+    name: 检查 TE 隧道状态
+    observation: tunnel_state
+    vendors:
+      huawei:  { command: "display mpls te tunnel-interface {tunnel}" }
+      h3c:     { command: "display mpls te tunnel-interface {tunnel}" }
+      cisco:   { command: "show mpls traffic-eng tunnels {tunnel}" }
+      default: { command: "show mpls te tunnel {tunnel}" }

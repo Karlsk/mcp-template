@@ -17,6 +17,7 @@ from app.common.logging import setup_logging
 from app.graph.client import GraphClient
 from app.sdn.client import SDNClient
 from app.settings import Settings
+from app.templates import get_registry
 from app.tools import register_all
 
 INSTRUCTIONS = (
@@ -128,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     # after build_server so this is the final logging mutation; not in
     # build_server itself (which tests use) to avoid disturbing test logging.
     setup_logging(settings.mcp_log_level)
+    # Fail fast on a malformed template library instead of surfacing it as a tool
+    # error on the first agent call.
+    get_registry()
     mcp.run(transport=args.transport)
     return 0
 

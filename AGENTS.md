@@ -10,7 +10,7 @@
 
 - 基于官方 `mcp` Python SDK 的 **v1 `FastMCP` API**（当前锁定 `mcp==1.28.1`；上游 `main` 的 v2 预发布 API 不兼容，升级前必须核对 API 变更）。
 - 主传输为 **Streamable HTTP**（端点 `/mcp`），同时支持 **stdio**（便于 Claude Desktop 等本地客户端联调）。
-- 仓库交付的是**骨架**：MCP server、通用 HTTP 客户端、SDN 对接层（结构完整、端点打桩）、配置管理、测试套件与 Docker 部署。接入真实控制器时遵循「models → client → tools」三处改动规范（见 §9）。
+- 仓库交付的是**骨架**：MCP server、通用 HTTP 客户端、SDN 对接层（结构完整、端点打桩）、配置管理、测试套件与 Docker 部署。接入真实控制器时遵循「models → client → tools」三处改动规范（见 §10）。
 - **骨架模式**：`base_url` 留空时 server 照常启动，SDN 工具返回 `{ok: false, configured: false}`。
 
 ## 2. 技术栈
@@ -61,6 +61,10 @@ sdn-mcp-template/
 │   │   ├── client.py             # SDNClient：业务方法 + token 生命周期 + 错误映射
 │   │   ├── models.py             # Pydantic 响应模型（边界校验，纯数据）
 │   │   └── exceptions.py         # SDNError 层级（安全 public_message）
+│   ├── templates/                # 命令模板库集成层（本地 YAML 数据源）
+│   │   ├── registry.py           # CommandTemplateRegistry：加载校验 / vendor 归一 / default 回退 / 进程级缓存
+│   │   ├── models.py             # CommandTemplate / ActionSummary（纯数据）
+│   │   └── exceptions.py         # TemplateError（单层安全消息）
 │   └── tools/                    # MCP 工具层（薄适配器）
 │       ├── __init__.py           # register_all()：工具模块注册聚合点
 │       ├── system.py             # ping、sdn_health
@@ -74,11 +78,12 @@ sdn-mcp-template/
 │       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
 │       ├── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
 │       ├── sop_tools.py          # search_sop（已实现，spec-03 SOP 图受控检索）
-│       ├── template_tools.py     # search_command_template（占位，spec-04 落实现）
+│       ├── template_tools.py     # search_command_template（已实现，spec-04 命令模板库查表）
 │       ├── graph_tools.py        # get_fault_subgraph / get_topology_snapshot（占位）
 │       ├── config_tools.py       # get_config_diff（占位）
 │       └── change_tools.py       # get_change_history（占位）
 ├── config/sdn_controller.yaml    # 非敏感配置（sdn: endpoints / timeout / retry / auth_type；neo4j: uri / database …）
+├── config/command_templates.yaml # 命令模板库（action × vendor → command，非 secret，可提交）
 ├── scripts/
 │   ├── test_client.py            # MCP 测试客户端（list-tools / call-tool）
 │   └── test_sdn_live.py          # 对真实控制器的 live 集成验证（basic 全流程）
@@ -291,9 +296,21 @@ MCP tool 函数 (app/tools/*.py)
 
 **信封语义**：零命中是 `ok: True, mode: "empty"`（查询成功、结果为空），不是 `ok: False`（调用失败）；图库未配置走 `graph_skeleton_payload()`（`GRAPH_SKELETON_DETAIL`，与 SDN 版 `SKELETON_DETAIL` 文案分开）。
 
-## 9. 新 SDN Client / 新工具开发规范
+## 9. 命令模板库（YAML）
 
-### 9.1 给 SDNClient 增加业务方法（最常见）
+`config/command_templates.yaml` 是 `action × vendor → command` 查表：一级 key = `action`（与 SOP 图 `Step.action` 完全对齐），二级 = `vendor`（小写，`default` 是回退项），叶子必有非空 `command`；其它键（`notes`/`parser`/…）原样透传给 agent（`CommandTemplate` `extra="allow"`）。集成层是 `app/templates/`（与 `sdn/`/`graph/` 同级，数据源为本地文件），进程级单例懒加载缓存（`get_registry()`），`reset_registry()` 仅供测试。
+
+**vendor 归一与 default 回退**：`normalize_vendor` 把拼写按别名表归一到规范键（hw/vrp→huawei、hpe/comware→h3c、ios/iosxr/nxos→cisco），未知值小写后原样透传；`get(action, vendor)` 未命中归一 vendor 时回退 `default` 条目（`fallback="default"`，`vendor` 仍回显请求的归一 vendor），两者都无则 `None`——工具层回自纠信封 `available_actions`（有界，`MAX_TEMPLATE_RESULTS=50`），若 action 存在但 vendor 缺失且无 default，detail 补一句 "no default entry"。
+
+**不渲染占位符（铁律）**：工具只返回含 `{name}` 占位符的 `command` 与 `placeholders` 列表，不接受参数、不做字符串替换——渲染会让模型把 `| delete flash:` 填进 `display` 开头的命令，绕过 `sdn_run_command` 的首 token 白名单。将来若加渲染必须同时满足：占位符值走严格白名单正则、拒绝一切 CLI 元字符（`|`/`;`/换行/反引号）、渲染后仍过只读检查。
+
+**fail-fast**：`load()` 五条校验（文件缺失 / 非 mapping 或缺 `templates` / action 缺 vendors / command 为空 / vendor 别名归一后冲突），均抛 `TemplateError`（单层消息，**不含绝对路径**——路径只进日志）；`main()` 在 `setup_logging` 后预热一次，坏库**启动即阻断**（与 SDN basic 登录同理，不同于图库 probe 不阻断）。模板库是部署产物，改模板需重启，不提供热重载（保证"某次排障用的哪版命令"可追溯）。
+
+**为何不进 lifespan**：它是进程级只读纯数据，无连接、无 secret、无需清理；SDNClient/GraphClient 进 lifespan 是因为有连接生命周期与凭据。`template_tools.py` 直接 import `app/templates`——它就是这个数据源的集成层，不违反"tools 不得直碰传输库（httpx/neo4j）"规则。
+
+## 10. 新 SDN Client / 新工具开发规范
+
+### 10.1 给 SDNClient 增加业务方法（最常见）
 
 三处改动，**不需要改 server.py / settings.py**：
 
@@ -322,7 +339,7 @@ MCP tool 函数 (app/tools/*.py)
    取 client → 校验入参 → 调一个 client 方法 → 返回 `{"ok": True, "configured": True, **result...}`；
    两层 except 兜底（`SDNError` + `Exception`）。新工具模块则还需在 `app/tools/__init__.py::register_all` 登记一行。
 
-同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §10）。
+同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §11）。
 
 > v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
 
@@ -330,12 +347,12 @@ MCP tool 函数 (app/tools/*.py)
 
 > **占位工具约定（spec-01）**：数据源未接入的工具先钉注册面——按最终签名注册，函数体只做参数校验并返回 `validation.not_implemented_payload(hint)`（`{ok: false, configured: false, detail: "Tool is registered but not implemented yet."}`，`hint` 点名待接入数据源）；占位阶段不加 `ctx` 与两层 except（无 IO、避免不可达分支）。落实现时只替换函数体并按 §5 补两层兜底，**参数名不得再改**。
 
-### 9.2 接入一个全新类型的控制器
+### 10.2 接入一个全新类型的控制器
 
 - 优先复用 `SDNClient`：鉴权差异用 `auth_type` 三选一覆盖；登录契约差异**只重写 `get_token()`**。
 - 确需新 client 类时（如另一种控制协议）：照 `app/sdn/` 建包（`client.py` + `models.py` + `exceptions.py`），复用 `app/common/http.py` 的 `HttpClient`，在 `server.py` lifespan 中增配一个上下文 key，tools 从 lifespan 取用。**禁止**绕过 `HttpClient` 直接用 `httpx`（会丢掉统一重试/超时/可测试性）。
 
-### 9.3 硬性规则清单（DON'T）
+### 10.3 硬性规则清单（DON'T）
 
 - ❌ tools 层出现端点 URL / 请求体 / 响应解析 / `import httpx`。
 - ❌ 业务方法绕过 `_send` 直接调 `self._http.get(...)`（丢失 token 刷新）。
@@ -344,8 +361,9 @@ MCP tool 函数 (app/tools/*.py)
 - ❌ 把 secret 写进 `config/sdn_controller.yaml`——`settings.py::_reject_secrets_in_yaml` 会在启动时**拒绝加载**含 `sdn_controller_token/username/password`、`neo4j_username/neo4j_password` 键的 YAML（设计使然，不要绕过）。
 - ❌ token/凭证进 URL query 或 path（bearer 走 header，登录凭证走 JSON body）。
 - ❌ models 里做 IO / import 内部模块。
+- ❌ 在服务端渲染命令占位符 / 让模型自由生成设备命令（命令只能来自 `config/command_templates.yaml` 白名单条目，见 §9）。
 
-## 10. 测试与质量
+## 11. 测试与质量
 
 ```bash
 uv run pytest            # asyncio_mode=auto；addopts 内置 --cov=app --cov-fail-under=80
@@ -360,7 +378,7 @@ uv run mypy
 - **Neo4j mock**：fake `AsyncDriver`/`AsyncSession`/`AsyncManagedTransaction` 经 `GraphClient(settings, driver=...)` 注入——`_db` 守卫、错误映射、生命周期全程无需真实图库。
 - live 验证（手动，需真实控制器）：`PYTHONPATH=. uv run python scripts/test_sdn_live.py`。该脚本逐步跑全部 v1.5 业务方法、逐步容错并汇总 PASS/FAIL，兼作**瘦类型 schema 探针**——发现字段差异回填 `app/sdn/models.py`。
 
-## 11. 运行与部署
+## 12. 运行与部署
 
 ```bash
 uv run sdn-mcp                                  # Streamable HTTP，127.0.0.1:8000/mcp
@@ -383,6 +401,7 @@ uv run python scripts/test_client.py call-tool --url http://127.0.0.1:8000/mcp -
 | `NEO4J_URI` | 空 | Neo4j 地址（如 `bolt://host:7687`）；**env 优先于 YAML `neo4j.uri`**；空 = 图库骨架模式 |
 | `NEO4J_USERNAME` / `NEO4J_PASSWORD` | — | Neo4j 凭证（`SecretStr`，仅 env/.env；出现在 YAML 会被启动时拒绝） |
 | `SDN_CONFIG_FILE` | `config/sdn_controller.yaml` | YAML 路径覆盖（Docker 内置 `/app/config/...`） |
+| `COMMAND_TEMPLATE_FILE` | `config/command_templates.yaml` | 命令模板库路径覆盖（镜像内默认解析为 `/app/config/command_templates.yaml`） |
 
 Docker（Makefile 封装 `deploy/docker-compose.yml`，自动带项目根 `.env`）：
 
@@ -392,7 +411,7 @@ make docker-build | docker-up | docker-stop | docker-restart | docker-ps | docke
 
 镜像为多阶段构建：uv builder 安装依赖 → `python:3.13-slim` 运行镜像；secret 只经环境变量注入、绝不烤进镜像；`config/` 以**只读卷**挂载。
 
-## 12. 排错速查
+## 13. 排错速查
 
 - `uv run sdn-mcp` 报 `ModuleNotFoundError: No module named 'app'`：editable 安装的 `.pth` 在某些 Python 构建上不加载。修复：`rm -rf .venv && uv venv && uv sync`，或 `uv pip install .`，或 `uv run python -m app.server`（见 README「排错」）。
 - 启动即 `SDNConfigError`：`auth_type=basic` 但缺 username/password/`endpoints.login`——按提示补齐 `.env` 与 YAML。

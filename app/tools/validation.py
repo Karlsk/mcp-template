@@ -16,6 +16,7 @@ from app.sdn.client import PERF_TIME_FORMAT
 MAX_PAGE_SIZE = 100
 
 SKELETON_DETAIL = "SDN controller not configured (skeleton mode)."
+GRAPH_SKELETON_DETAIL = "SOP graph not configured (skeleton mode)."
 UNEXPECTED_DETAIL = "Unexpected server error."
 NOT_IMPLEMENTED_DETAIL = "Tool is registered but not implemented yet."
 
@@ -60,6 +61,11 @@ def time_window_detail(start_time: str | None, end_time: str | None) -> str | No
 def skeleton_payload() -> dict[str, object]:
     """Envelope returned when the controller is not configured (skeleton mode)."""
     return {"ok": False, "configured": False, "detail": SKELETON_DETAIL}
+
+
+def graph_skeleton_payload() -> dict[str, object]:
+    """Envelope returned when the SOP graph is not configured (skeleton mode)."""
+    return {"ok": False, "configured": False, "detail": GRAPH_SKELETON_DETAIL}
 
 
 def unexpected_payload() -> dict[str, object]:

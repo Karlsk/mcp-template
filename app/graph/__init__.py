@@ -8,7 +8,7 @@ from app.graph.exceptions import (
     GraphError,
     GraphQueryError,
 )
-from app.graph.models import GraphFragment, SOPEdge
+from app.graph.models import GraphFragment, SOPCandidate, SOPEdge, SOPNode, SOPTree
 
 __all__ = [
     "GraphAuthError",
@@ -18,5 +18,8 @@ __all__ = [
     "GraphError",
     "GraphFragment",
     "GraphQueryError",
+    "SOPCandidate",
     "SOPEdge",
+    "SOPNode",
+    "SOPTree",
 ]

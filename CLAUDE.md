@@ -73,7 +73,7 @@ sdn-mcp-template/
 │       ├── log_tools.py          # sdn_operation_logs
 │       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
 │       ├── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
-│       ├── sop_tools.py          # search_sop（占位，spec-03 落实现）
+│       ├── sop_tools.py          # search_sop（已实现，spec-03 SOP 图受控检索）
 │       ├── template_tools.py     # search_command_template（占位，spec-04 落实现）
 │       ├── graph_tools.py        # get_fault_subgraph / get_topology_snapshot（占位）
 │       ├── config_tools.py       # get_config_diff（占位）
@@ -269,6 +269,28 @@ MCP tool 函数 (app/tools/*.py)
 
 **日志**：事件与 `http.py` 对齐——`neo4j_query`/`neo4j_result`（DEBUG）、`neo4j_error`（WARNING），`extra` 含 `query_name`/`db_tag`/`record_count`/`elapsed_ms`/`error_type`。密码永不落日志；`params` 仅 `neo4j.log_params: true` 且 DEBUG 时输出；Cypher 全文不作默认日志字段（`query_name` 短名定位够用）。
 
+**SOP schema（spec-03）**：
+
+| 节点 label | 关键属性 |
+|---|---|
+| `Event` | `id` / `name` / `fault_type` / `intent` |
+| `Step` | `id` / `name` / `action` / `observation` |
+| `Output` | `id` / `name` / `answer` |
+
+边为 `NEXT {condition}`：分支边带 `condition` 字符串，直连边不带（工具信封里是 null 不是 `""`）。所有节点带 `_db`。瘦类型：models 全部 `extra="allow"`，`kind` 由 labels 推导（Event/Step/Output 小写，未知 label 保留原样小写）。
+
+**两阶段 db 语义（search_sop 的核心）**：
+
+- 发现阶段：`find_sop_events`/`resolve_sop_event` 是全仓库唯一跨库点——`db_tag=None + allow_cross_db=True`，且 params 必须显式预置 `"_db": None`（缺失会让真库报 `ParameterMissing`）；调用方给了 `db` 则收窄到该逻辑库（`db_tag=db`，不跨库）；
+- 展树阶段：`get_sop_tree` 用 `db_tag=db`，变长路径以 `ALL(n IN nodes(path) WHERE n._db = $_db)` 锁整个逻辑库（含中间节点）；`(db, event_id)` 才唯一定位一棵树，跨库同名 id 绝不并树。
+
+**两条陷阱**：
+
+- 变长路径锁逻辑库必须写 `ALL(n IN nodes(path) ...)`——只过滤端点挡不住跨库脏边，中间节点不过滤会把对面的树拖进来；
+- 变长上界（`*1..N`）不可参数化——Cypher 不支持在变长里放参数，`sop_tree_nodes(max_depth)` 是唯一内联点，前置三重防护：工具层 `positive_bound_detail` 范围校验 → client `int()` + 钳位 `[1, MAX_SOP_DEPTH]` → 只拼一个整数。
+
+**信封语义**：零命中是 `ok: True, mode: "empty"`（查询成功、结果为空），不是 `ok: False`（调用失败）；图库未配置走 `graph_skeleton_payload()`（`GRAPH_SKELETON_DETAIL`，与 SDN 版 `SKELETON_DETAIL` 文案分开）。
+
 ## 9. 新 SDN Client / 新工具开发规范
 
 ### 9.1 给 SDNClient 增加业务方法（最常见）
@@ -303,6 +325,8 @@ MCP tool 函数 (app/tools/*.py)
 同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §10）。
 
 > v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
+
+> **GraphClient 侧已落地方法（spec-03，与上面 SDN v1.5 清单分开）**：`find_sop_events`（发现：精确/模糊两段）/`resolve_sop_event`（跨库按 event_id 反查）/`get_sop_tree`（展树：锁定逻辑库），均追加在类尾、走私有 `_run` 薄封装（驱动异常唯一映射点）。
 
 > **占位工具约定（spec-01）**：数据源未接入的工具先钉注册面——按最终签名注册，函数体只做参数校验并返回 `validation.not_implemented_payload(hint)`（`{ok: false, configured: false, detail: "Tool is registered but not implemented yet."}`，`hint` 点名待接入数据源）；占位阶段不加 `ctx` 与两层 except（无 IO、避免不可达分支）。落实现时只替换函数体并按 §5 补两层兜底，**参数名不得再改**。
 

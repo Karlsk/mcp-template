@@ -69,7 +69,6 @@ PLACEHOLDER_TOOLS = {
     "get_topology_snapshot",
     "get_config_diff",
     "get_change_history",
-    "search_sop",
     "search_command_template",
 }
 
@@ -78,7 +77,6 @@ PLACEHOLDER_HINTS = {
     "get_topology_snapshot": "topology snapshot graph",
     "get_config_diff": "controller config snapshots + graph",
     "get_change_history": "PostgreSQL change events",
-    "search_sop": "SOP graph (Neo4j)",
     "search_command_template": "command template library (YAML)",
 }
 
@@ -87,7 +85,6 @@ PLACEHOLDER_VALID_ARGS: dict[str, dict[str, object]] = {
     "get_topology_snapshot": {},
     "get_config_diff": {"device_name": "R1"},
     "get_change_history": {},
-    "search_sop": {},
     "search_command_template": {},
 }
 

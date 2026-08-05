@@ -17,6 +17,43 @@ class SOPEdge(BaseModel):
     condition: str | None = None
 
 
+class SOPNode(BaseModel):
+    """A node in a SOP tree (Event / Step / Output share this shape)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = ""
+    kind: str = ""            # "event" | "step" | "output" — derived from the label
+    name: str = ""
+    action: str = ""          # Step only: the command-template intent key
+    observation: str = ""     # Step only: field to extract from the command output
+    answer: str = ""          # Output only
+
+
+class SOPCandidate(BaseModel):
+    """One matched Event. ``db`` + ``event_id`` together locate its tree."""
+
+    model_config = ConfigDict(extra="allow")
+
+    db: str = ""
+    event_id: str = ""
+    name: str = ""
+    fault_type: str = ""
+    intent: str = ""
+
+
+class SOPTree(BaseModel):
+    """A complete SOP tree: one Event root, every reachable Step/Output, all edges."""
+
+    model_config = ConfigDict(extra="allow")
+
+    db: str = ""
+    event: SOPNode
+    nodes: list[SOPNode] = Field(default_factory=list)
+    edges: list[SOPEdge] = Field(default_factory=list)
+    truncated: bool = False
+
+
 class GraphFragment(BaseModel):
     """Serialization-neutral graph payload: plain nodes + edges.
 

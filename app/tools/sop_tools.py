@@ -1,36 +1,157 @@
-"""SOP graph retrieval tool (placeholder).
+"""SOP graph controlled retrieval tool.
 
-``search_sop`` will run controlled retrieval over the SOP graph (Neo4j) by
-fault type / intent. The graph store is not wired yet; spec-03 replaces the
-function body while keeping this signature frozen. See
-docs/spec-01-工具占位与注册面.md.
+``search_sop`` implements the two-stage retrieval defined in
+docs/spec-03-search_sop-SOP图检索.md: a cross-db discovery stage followed by
+a tree expansion locked to one logical db. Parameter names stay frozen from
+spec-01; only the body changed.
 """
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+import logging
+from typing import Any
 
-from app.tools.validation import not_implemented_payload
+from mcp.server.fastmcp import Context, FastMCP
+
+from app.graph import GraphClient, GraphError, SOPCandidate, SOPTree
+from app.graph.cypher import MAX_SOP_CANDIDATES, MAX_SOP_DEPTH
+from app.tools.validation import (
+    graph_skeleton_payload,
+    positive_bound_detail,
+    unexpected_payload,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _tree_payload(tree: SOPTree | None, match: str) -> dict[str, object]:
+    if tree is None:
+        return {"ok": False, "configured": True,
+                "detail": "no SOP event matches the given db and event_id"}
+    return {
+        "ok": True,
+        "configured": True,
+        "mode": "tree",
+        "match": match,
+        "db": tree.db,
+        "event": tree.event.model_dump(),
+        "nodes": [n.model_dump() for n in tree.nodes],
+        "edges": [e.model_dump() for e in tree.edges],
+        "truncated": tree.truncated,
+        "next_step_hint": (
+            "For each node with kind='step', call "
+            "search_command_template(action=<step.action>, vendor=<device vendor>)."
+        ),
+    }
+
+
+def _candidates_payload(candidates: list[SOPCandidate], match: str) -> dict[str, object]:
+    return {
+        "ok": True,
+        "configured": True,
+        "mode": "candidates",
+        "match": match,
+        "candidates": [c.model_dump() for c in candidates],
+        "next_step_hint": "Re-call search_sop with both db and event_id of one candidate.",
+    }
+
+
+def _empty_payload(match: str) -> dict[str, object]:
+    return {
+        "ok": True,
+        "configured": True,
+        "mode": "empty",
+        "match": match,
+        "candidates": [],
+        "detail": "no SOP event matched; try a broader keyword or a different fault_type",
+    }
 
 
 def register(mcp: FastMCP) -> None:
-    """Register the SOP search tool."""
+    """Register the SOP graph search tool."""
 
     @mcp.tool(
         name="search_sop",
         description=(
-            "Controlled retrieval of SOPs from the SOP graph (Neo4j) by fault "
-            "type / intent / keyword. NOT IMPLEMENTED YET: returns {ok: false, "
-            "configured: false}."
+            "Search the SOP graph for the standard operating procedure matching a "
+            "fault type or intent, and return its full decision tree. Matching is "
+            "exact-first (name/alias/fault_type/intent), falling back to keyword "
+            "substring. One hit returns the tree (mode='tree'); several hits return "
+            "candidates (mode='candidates') — re-call with the candidate's db AND "
+            "event_id to expand one. Each step carries an 'action' key: feed it to "
+            "search_command_template to get the vendor-specific command. Returns "
+            "{ok, configured, mode, match, db, event, nodes[], edges[], truncated}."
         ),
     )
     async def search_sop(
+        ctx: Context[Any, Any, Any],
         fault_type: str | None = None,
         intent: str | None = None,
         keyword: str | None = None,
         db: str | None = None,
         event_id: str | None = None,
         limit: int = 10,
-        max_depth: int = 20,  # == graph.cypher.MAX_SOP_DEPTH (spec-03 §4.5)
+        max_depth: int = MAX_SOP_DEPTH,
     ) -> dict[str, object]:
-        return not_implemented_payload("SOP graph (Neo4j)")
+        if not any((fault_type, intent, keyword, event_id)):
+            return {
+                "ok": False,
+                "detail": "provide at least one of fault_type / intent / keyword / event_id",
+            }
+        if detail := positive_bound_detail("limit", limit, MAX_SOP_CANDIDATES):
+            return {"ok": False, "detail": detail}
+        if detail := positive_bound_detail("max_depth", max_depth, MAX_SOP_DEPTH):
+            return {"ok": False, "detail": detail}
+
+        try:
+            graph: GraphClient = ctx.request_context.lifespan_context["graph_client"]
+            if not graph.configured:
+                return graph_skeleton_payload()
+
+            # Direct expansion: (db, event_id) locates exactly one tree.
+            if event_id and db:
+                return _tree_payload(
+                    await graph.get_sop_tree(
+                        db=db, event_id=event_id, max_depth=max_depth
+                    ),
+                    "exact",
+                )
+
+            # event_id without db: reverse-lookup, expand only when unambiguous.
+            if event_id:
+                found = await graph.resolve_sop_event(event_id)
+                if len(found) == 1:
+                    return _tree_payload(
+                        await graph.get_sop_tree(
+                            db=found[0].db, event_id=event_id, max_depth=max_depth
+                        ),
+                        "exact",
+                    )
+                if not found:
+                    return _empty_payload("exact")
+                return _candidates_payload(found, "exact")
+
+            candidates, match = await graph.find_sop_events(
+                fault_type=fault_type,
+                intent=intent,
+                keyword=keyword,
+                db=db,
+                limit=limit,
+            )
+            if not candidates:
+                return _empty_payload(match)
+            if len(candidates) == 1:
+                only = candidates[0]
+                return _tree_payload(
+                    await graph.get_sop_tree(
+                        db=only.db, event_id=only.event_id, max_depth=max_depth
+                    ),
+                    match,
+                )
+            return _candidates_payload(candidates, match)
+        except GraphError as exc:
+            await ctx.error(f"search_sop failed: {exc}")
+            return {"ok": False, "configured": True, "detail": str(exc)}
+        except Exception:
+            logger.exception("search_sop unexpected failure")
+            return unexpected_payload()

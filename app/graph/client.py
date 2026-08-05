@@ -22,11 +22,24 @@ them must be mapped onto a sanitized message.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import neo4j
 from neo4j import AsyncDriver
 
 from app.common.neo4j import Neo4jClient, Neo4jClientConfig
+from app.graph.cypher import (
+    FIND_EVENTS_EXACT,
+    FIND_EVENTS_FUZZY,
+    LABEL_EVENT,
+    LABEL_OUTPUT,
+    LABEL_STEP,
+    MAX_SOP_DEPTH,
+    MAX_SOP_NODES,
+    RESOLVE_EVENT_BY_ID,
+    SOP_TREE_EDGES,
+    sop_tree_nodes,
+)
 from app.graph.exceptions import (
     GraphAuthError,
     GraphConfigError,
@@ -34,9 +47,52 @@ from app.graph.exceptions import (
     GraphError,
     GraphQueryError,
 )
+from app.graph.models import SOPCandidate, SOPEdge, SOPNode, SOPTree
 from app.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_LABELS = frozenset({LABEL_EVENT, LABEL_STEP, LABEL_OUTPUT})
+
+
+def _normalize(value: str | None) -> str | None:
+    """Case-insensitive matching starts client-side: strip + lower; empty -> None."""
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    return cleaned or None
+
+
+def _kind_from_labels(labels: object) -> str:
+    """Map node labels onto ``SOPNode.kind`` (unknown labels stay, lowercased)."""
+    for label in labels if isinstance(labels, list) else []:
+        if label in _KNOWN_LABELS:
+            return str(label).lower()
+    if isinstance(labels, list) and labels:
+        return str(labels[0]).lower()
+    return ""
+
+
+def _to_node(row: dict[str, Any]) -> SOPNode:
+    """Build a SOPNode from one sop_tree_nodes row.
+
+    Typed fields come from the coalesced RETURN columns; ``props`` is merged
+    afterwards so schema evolution survives via ``extra="allow"`` (typed
+    values win over raw props).
+    """
+    data: dict[str, Any] = {
+        "id": row.get("id") or "",
+        "kind": _kind_from_labels(row.get("labels")),
+        "name": row.get("name") or "",
+        "action": row.get("action") or "",
+        "observation": row.get("observation") or "",
+        "answer": row.get("answer") or "",
+    }
+    props = row.get("props")
+    if isinstance(props, dict):
+        for key, value in props.items():
+            data.setdefault(key, value)
+    return SOPNode.model_validate(data)
 
 
 def _map_neo4j_error(exc: Exception) -> GraphError:
@@ -106,3 +162,128 @@ class GraphClient:
     async def aclose(self) -> None:
         """Close the underlying driver (idempotent)."""
         await self._neo4j.close()
+
+    # ------------------------------------------------------------------
+    # SOP business methods (spec-03 §5). Uniform shape: guard, run, map.
+    # ------------------------------------------------------------------
+
+    async def _run(
+        self,
+        statement: str,
+        params: dict[str, Any] | None,
+        *,
+        db_tag: str | None,
+        allow_cross_db: bool = False,
+        query_name: str = "query",
+    ) -> list[dict[str, Any]]:
+        """Thin wrapper: the ONLY place driver exceptions are mapped."""
+        try:
+            return await self._neo4j.run_read(
+                statement,
+                params,
+                db_tag=db_tag,
+                allow_cross_db=allow_cross_db,
+                query_name=query_name,
+            )
+        except Exception as exc:  # driver exceptions only here
+            raise _map_neo4j_error(exc) from exc
+
+    async def find_sop_events(
+        self,
+        *,
+        fault_type: str | None = None,
+        intent: str | None = None,
+        keyword: str | None = None,
+        db: str | None = None,
+        limit: int = 10,
+    ) -> tuple[list[SOPCandidate], str]:
+        """Find candidate SOP Events. Returns (candidates, match_mode).
+
+        ``match_mode`` is "exact", "fuzzy", or "none". Discovery spans every logical
+        database unless ``db`` narrows it — the only cross-db query in the codebase.
+        """
+        self._require_configured()
+        needle = _normalize(keyword) or _normalize(fault_type) or _normalize(intent)
+        params: dict[str, Any] = {
+            # Cypher references $_db even on the cross-db path, so the parameter
+            # must exist (as null) or Neo4j raises ParameterMissing. When ``db``
+            # narrows the search, run_read overwrites this preset with the tag.
+            "_db": None,
+            "fault_type": _normalize(fault_type),
+            "intent": _normalize(intent),
+            "needle": needle,
+            "limit": limit,
+        }
+        cross = db is None
+        rows = await self._run(
+            FIND_EVENTS_EXACT, params, db_tag=db, allow_cross_db=cross,
+            query_name="find_sop_events_exact",
+        )
+        mode = "exact"
+        if not rows and needle:
+            rows = await self._run(
+                FIND_EVENTS_FUZZY, params, db_tag=db, allow_cross_db=cross,
+                query_name="find_sop_events_fuzzy",
+            )
+            mode = "fuzzy"
+        if not rows:
+            mode = "none"
+        return [SOPCandidate.model_validate(row) for row in rows], mode
+
+    async def resolve_sop_event(self, event_id: str) -> list[SOPCandidate]:
+        """Reverse-lookup an Event by id across logical databases.
+
+        Used when the caller supplies ``event_id`` without ``db``. Ids are not
+        guaranteed globally unique, so multiple hits are returned rather than guessed.
+        """
+        self._require_configured()
+        rows = await self._run(
+            RESOLVE_EVENT_BY_ID,
+            # Same ParameterMissing contract as the discovery stage.
+            {"_db": None, "event_id": event_id},
+            db_tag=None,
+            allow_cross_db=True,
+            query_name="resolve_sop_event",
+        )
+        return [SOPCandidate.model_validate(row) for row in rows]
+
+    async def get_sop_tree(
+        self, *, db: str, event_id: str, max_depth: int = MAX_SOP_DEPTH
+    ) -> SOPTree | None:
+        """Fetch one complete SOP tree, scoped to a single logical database.
+
+        Returns None when no Event matches ``(db, event_id)``. Traversal is confined
+        to ``db``: every node on every path must carry the same ``_db``.
+        """
+        self._require_configured()
+        depth = max(1, min(int(max_depth), MAX_SOP_DEPTH))
+        rows = await self._run(
+            sop_tree_nodes(depth),
+            {"event_id": event_id, "node_limit": MAX_SOP_NODES + 1},
+            db_tag=db,
+            query_name="sop_tree_nodes",
+        )
+        if not rows:
+            return None
+        truncated = len(rows) > MAX_SOP_NODES
+        rows = rows[:MAX_SOP_NODES]
+        nodes = [_to_node(row) for row in rows]
+        edge_rows = await self._run(
+            SOP_TREE_EDGES,
+            {"node_ids": [n.id for n in nodes]},
+            db_tag=db,
+            query_name="sop_tree_edges",
+        )
+        event = next((n for n in nodes if n.kind == "event"), None)
+        if event is None:
+            raise GraphQueryError(
+                "SOP graph response was malformed.",
+                detail=f"no Event node in tree rows for {db}/{event_id}",
+            )
+        return SOPTree(
+            db=db,
+            event=event,
+            nodes=nodes,
+            edges=[SOPEdge.model_validate(r) for r in edge_rows],
+            truncated=truncated,
+        )

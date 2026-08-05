@@ -110,6 +110,8 @@ class FakeNeo4jTransaction:
         self._driver.calls.append({"cypher": cypher, "params": params, "timeout": timeout})
         if self._driver.run_exc is not None:
             raise self._driver.run_exc
+        if self._driver.records_handler is not None:
+            return FakeNeo4jResult(self._driver.records_handler(cypher, params))
         return FakeNeo4jResult(self._driver.records)
 
 
@@ -138,10 +140,14 @@ class FakeNeo4jDriver:
         records: list[dict[str, Any]] | None = None,
         run_exc: Exception | None = None,
         connectivity_exc: Exception | None = None,
+        records_handler: Callable[[str, dict[str, Any]], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.records = records or []
         self.run_exc = run_exc
         self.connectivity_exc = connectivity_exc
+        # Dynamic responses keyed by (cypher, params) — needed by spec-03 tests
+        # where each logical database returns its own rows.
+        self.records_handler = records_handler
         self.calls: list[dict[str, Any]] = []
         self.session_databases: list[str | None] = []
         self.sessions_closed = 0

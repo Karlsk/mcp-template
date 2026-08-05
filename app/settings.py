@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -33,7 +33,13 @@ DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "sdn_c
 
 # Secret fields that must NEVER be loaded from YAML (env / .env only).
 _FORBIDDEN_YAML_KEYS = frozenset(
-    {"sdn_controller_token", "sdn_controller_username", "sdn_controller_password"}
+    {
+        "sdn_controller_token",
+        "sdn_controller_username",
+        "sdn_controller_password",
+        "neo4j_username",
+        "neo4j_password",
+    }
 )
 
 
@@ -61,6 +67,27 @@ class SdnSettings(BaseModel):
     # SDN troubleshooting. Error-response bodies are always logged (redacted) at
     # WARNING regardless of this flag.
     http_log_bodies: bool = False
+
+
+class Neo4jSettings(BaseModel):
+    """Non-secret SOP graph configuration (loaded from YAML).
+
+    Note: there is deliberately no ``db_tag`` here. The logical database (the
+    node ``_db`` property) is data, not configuration — it is resolved per query
+    by ``app/graph`` and passed explicitly on every call.
+
+    ``extra="forbid"`` so that credentials mistakenly written under the ``neo4j:``
+    block (e.g. ``username:``) fail loudly at startup instead of being silently
+    ignored — they belong in env/.env only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str = ""
+    database: str = "neo4j"
+    query_timeout: float = 30.0
+    max_transaction_retry_time: float = 15.0
+    log_params: bool = False
 
 
 class Settings(BaseSettings):
@@ -92,6 +119,14 @@ class Settings(BaseSettings):
     # ---- SDN non-secret structure (YAML) ----
     sdn: SdnSettings = Field(default_factory=SdnSettings)
 
+    # ---- Neo4j SOP graph connection (env / .env) ----
+    neo4j_uri: str | None = None
+    neo4j_username: str | None = None
+    neo4j_password: SecretStr | None = None
+
+    # ---- Neo4j non-secret structure (YAML) ----
+    neo4j: Neo4jSettings = Field(default_factory=Neo4jSettings)
+
     @property
     def sdn_base_url(self) -> str:
         """Effective controller base URL — env override wins over the YAML value."""
@@ -100,6 +135,15 @@ class Settings(BaseSettings):
     def sdn_is_configured(self) -> bool:
         """True when an SDN controller base URL is present."""
         return bool(self.sdn_base_url)
+
+    @property
+    def neo4j_base_uri(self) -> str:
+        """Effective graph URI — env override wins over the YAML value."""
+        return self.neo4j_uri or self.neo4j.uri
+
+    def neo4j_is_configured(self) -> bool:
+        """True when a graph URI is present."""
+        return bool(self.neo4j_base_uri)
 
     @classmethod
     def settings_customise_sources(
@@ -131,8 +175,7 @@ def _reject_secrets_in_yaml(path: Path) -> None:
     if found:
         raise ValueError(
             f"Refusing to load secret key(s) {sorted(found)} from YAML ({path}). "
-            "Provide SDN_CONTROLLER_TOKEN / SDN_CONTROLLER_USERNAME / "
-            "SDN_CONTROLLER_PASSWORD via environment or .env instead."
+            "Provide them via environment or .env instead."
         )
 
 

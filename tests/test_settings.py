@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from app.settings import Settings
+from app.settings import Neo4jSettings, Settings
 
 
 def test_defaults() -> None:
@@ -117,3 +118,53 @@ def test_custom_config_file_overrides_yaml(tmp_path: Path, monkeypatch: pytest.M
     settings = Settings()
     assert settings.sdn.timeout == 5.0
     assert settings.sdn.endpoints["devices"] == "/api/devices"
+
+
+# ---------------------------------------------------------------------------
+# Neo4j SOP graph configuration (spec-02)
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_rejects_neo4j_password(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The secret guard must also cover graph credentials."""
+    config = tmp_path / "cfg.yaml"
+    config.write_text("neo4j_password: 'should-not-be-here'\n")
+    monkeypatch.setenv("SDN_CONFIG_FILE", str(config))
+    with pytest.raises(ValueError, match="Refusing to load secret"):
+        Settings()
+
+
+def test_neo4j_uri_env_overrides_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """NEO4J_URI (env) wins over the YAML neo4j.uri."""
+    config = tmp_path / "cfg.yaml"
+    config.write_text("neo4j:\n  uri: 'bolt://from-yaml:7687'\n")
+    monkeypatch.setenv("SDN_CONFIG_FILE", str(config))
+    monkeypatch.setenv("NEO4J_URI", "bolt://from-env:7687")
+    settings = Settings()
+    assert settings.neo4j_base_uri == "bolt://from-env:7687"
+
+
+def test_neo4j_is_configured_two_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert Settings().neo4j_is_configured() is False
+    config = tmp_path / "cfg.yaml"
+    config.write_text("neo4j:\n  uri: 'bolt://graph.example:7687'\n")
+    monkeypatch.setenv("SDN_CONFIG_FILE", str(config))
+    assert Settings().neo4j_is_configured() is True
+
+
+def test_neo4j_settings_has_no_db_tag() -> None:
+    """The logical database is data, never configuration (spec-02 decision 3)."""
+    assert "db_tag" not in Neo4jSettings.model_fields
+
+
+def test_neo4j_block_forbids_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """username/password under neo4j: must fail loudly (extra='forbid')."""
+    config = tmp_path / "cfg.yaml"
+    config.write_text("neo4j:\n  uri: 'bolt://x:7687'\n  password: 'oops'\n")
+    monkeypatch.setenv("SDN_CONFIG_FILE", str(config))
+    with pytest.raises(ValidationError):
+        Settings()

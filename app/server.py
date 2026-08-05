@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from app.common.logging import setup_logging
+from app.graph.client import GraphClient
 from app.sdn.client import SDNClient
 from app.settings import Settings
 from app.tools import register_all
@@ -25,6 +26,7 @@ INSTRUCTIONS = (
 )
 
 SDNClientFactory = Callable[[], SDNClient]
+GraphClientFactory = Callable[[], GraphClient]
 
 
 def default_sdn_client_factory(settings: Settings) -> SDNClientFactory:
@@ -36,34 +38,54 @@ def default_sdn_client_factory(settings: Settings) -> SDNClientFactory:
     return _factory
 
 
+def default_graph_client_factory(settings: Settings) -> GraphClientFactory:
+    """Build the default factory that constructs a real GraphClient from settings."""
+
+    def _factory() -> GraphClient:
+        return GraphClient(settings)
+
+    return _factory
+
+
 def _make_lifespan(
     factory: SDNClientFactory,
-) -> Callable[[FastMCP], AbstractAsyncContextManager[dict[str, SDNClient]]]:
-    """Build a per-session lifespan that owns one SDNClient (closed on shutdown)."""
+    graph_factory: GraphClientFactory,
+) -> Callable[[FastMCP], AbstractAsyncContextManager[dict[str, object]]]:
+    """Build a per-session lifespan owning one SDNClient and one GraphClient."""
 
     @asynccontextmanager
-    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, SDNClient]]:
+    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, object]]:
         client = factory()
+        graph = graph_factory()
         try:
             # basic mode: fetch the first token (fail-fast at startup if the
             # controller is unreachable or rejects credentials). no-auth/bearer: no-op.
             await client.initialize()
-            yield {"sdn_client": client}
+            # Unlike the SDN basic-auth login, graph connectivity is NOT
+            # fail-fast: SDN tools must keep working when the SOP graph is down.
+            await graph.probe()
+            yield {"sdn_client": client, "graph_client": graph}
         finally:
+            await graph.aclose()
             await client.aclose()
 
     return lifespan
 
 
 def build_server(
-    settings: Settings, *, sdn_client_factory: SDNClientFactory | None = None
+    settings: Settings,
+    *,
+    sdn_client_factory: SDNClientFactory | None = None,
+    graph_client_factory: GraphClientFactory | None = None,
 ) -> FastMCP:
     """Construct the FastMCP server with tools registered and lifespan wired.
 
-    ``sdn_client_factory`` lets tests inject a client backed by an
-    ``httpx.MockTransport``; in production a real client is built per session.
+    ``sdn_client_factory`` / ``graph_client_factory`` let tests inject clients
+    backed by an ``httpx.MockTransport`` / a fake Neo4j driver; in production
+    real clients are built per session.
     """
     factory = sdn_client_factory or default_sdn_client_factory(settings)
+    graph_factory = graph_client_factory or default_graph_client_factory(settings)
     mcp = FastMCP(
         "sdn-mcp",
         instructions=INSTRUCTIONS,
@@ -71,7 +93,7 @@ def build_server(
         port=settings.mcp_port,
         streamable_http_path="/mcp",
         log_level=settings.mcp_log_level,
-        lifespan=_make_lifespan(factory),
+        lifespan=_make_lifespan(factory, graph_factory),
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=settings.mcp_dns_rebinding_protection
         ),

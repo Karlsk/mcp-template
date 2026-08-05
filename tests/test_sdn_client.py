@@ -510,7 +510,14 @@ async def test_lifespan_closes_clients_when_initialize_fails() -> None:
         made["client"] = client
         return client
 
-    lifespan = _make_lifespan(factory)
+    class _StubGraph:
+        async def probe(self) -> bool:
+            return False
+
+        async def aclose(self) -> None:
+            return None
+
+    lifespan = _make_lifespan(factory, _StubGraph)
     with pytest.raises(SDNError):
         async with lifespan(None):
             pass  # pragma: no cover  # initialize() raises before yield

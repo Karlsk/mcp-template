@@ -20,6 +20,7 @@ from app.sdn.exceptions import (
     SDNNotFoundError,
 )
 from app.sdn.models import (
+    BgpNbrResponse,
     CommandResultResponse,
     Device,
     LinkInfo,
@@ -1141,3 +1142,59 @@ async def test_run_command_malformed_raises_sdn_error() -> None:
             await client.run_command("NJ-SCT-R01", "display version")
     finally:
         await client.aclose()
+
+
+# --- get_bgp_nbr (POST /controller/device-conf/bgpNbr) -----------------------
+
+
+async def test_get_bgp_nbr_posts_body_and_parses() -> None:
+    seen: dict[str, object] = {}
+    transport = _capturing_handler(
+        {
+            "local_ip": "172.16.11.2",
+            "local_interface": "LoopBack1",
+            "peer_device": [{"node_name": "NJ-SCT-R03", "tp_id": "LoopBack1"}],
+        },
+        seen,
+    )
+    client = SDNClient(make_settings(), transport=transport)
+    try:
+        result = await client.get_bgp_nbr("NJ-SCT-R01", "10.0.0.1")
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, BgpNbrResponse)
+    assert result.local_ip == "172.16.11.2"
+    assert result.peer_device[0].node_name == "NJ-SCT-R03"
+    # wire contract: POST, the documented endpoint, snake_case body keys
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/controller/device-conf/bgpNbr"
+    assert seen["body"] == {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
+
+
+async def test_get_bgp_nbr_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.get_bgp_nbr("NJ-SCT-R01", "10.0.0.1")
+    finally:
+        await client.aclose()
+
+
+async def test_get_bgp_nbr_endpoint_override() -> None:
+    sdn = SdnSettings(
+        base_url=BASE_URL,
+        auth_type="bearer",
+        timeout=1.0,
+        retry=RetrySettings(max_retries=0, base_delay=0.0, max_delay=0.0),
+        endpoints={"health": "/", "bgp_nbr": "/custom/bgpNbr"},
+    )
+    settings = Settings(sdn=sdn, sdn_controller_token=SecretStr("tok"))
+    seen: dict[str, object] = {}
+    transport = _capturing_handler({"local_ip": "1.1.1.1"}, seen)
+    client = SDNClient(settings, transport=transport)
+    try:
+        await client.get_bgp_nbr("NJ-SCT-R01", "10.0.0.1")
+    finally:
+        await client.aclose()
+    assert seen["path"] == "/custom/bgpNbr"

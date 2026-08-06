@@ -43,6 +43,7 @@ from app.sdn.exceptions import (
     SDNNotFoundError,
 )
 from app.sdn.models import (
+    BgpNbrResponse,
     CommandResultResponse,
     Device,
     LinkInfo,
@@ -639,6 +640,23 @@ class SDNClient:
             return CommandResultResponse.model_validate(resp.json())
         except (ValueError, ValidationError) as exc:
             raise SDNError("SDN command-result response was malformed.", detail=str(exc)) from exc
+
+    async def get_bgp_nbr(self, device_name: str, peer_ip: str) -> BgpNbrResponse:
+        """BGP peer info for one (device, peer) pair (POST device-conf/bgpNbr).
+
+        Returns the local IP/interface of the BGP session plus the peer-device
+        entries. Unknown response fields ride extras (``extra="allow"``).
+        """
+        endpoint = self._settings.sdn.endpoints.get(
+            "bgp_nbr", "/controller/device-conf/bgpNbr"
+        )
+        resp = await self.request(
+            "POST", endpoint, json={"device_name": device_name, "peer_ip": peer_ip}
+        )
+        try:
+            return BgpNbrResponse.model_validate(resp.json())
+        except (ValueError, ValidationError) as exc:
+            raise SDNError("SDN bgp-nbr response was malformed.", detail=str(exc)) from exc
 
     async def aclose(self) -> None:
         """Release the underlying HTTP clients. Idempotent."""

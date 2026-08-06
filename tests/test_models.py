@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from app.sdn.models import (
+    BgpNbrResponse,
     CommandResultResponse,
     Device,
     LinkInfo,
@@ -390,3 +391,30 @@ def test_command_result_response_defaults_and_extras() -> None:
     resp = CommandResultResponse.model_validate({"result": "ok", "code": 0})
     assert resp.result == "ok"
     assert resp.model_dump()["code"] == 0  # extra field preserved
+
+
+# --- BGP neighbor (bgpNbr) ---------------------------------------------------
+
+
+def test_bgp_nbr_response_parses_sample() -> None:
+    resp = BgpNbrResponse.model_validate(
+        {
+            "local_ip": "172.16.11.2",
+            "local_interface": "LoopBack1",
+            "peer_device": [{"node_name": "NJ-SCT-R03", "tp_id": "LoopBack1"}],
+        }
+    )
+    assert resp.local_ip == "172.16.11.2"
+    assert resp.local_interface == "LoopBack1"
+    assert len(resp.peer_device) == 1
+    assert resp.peer_device[0].node_name == "NJ-SCT-R03"
+    assert resp.peer_device[0].tp_id == "LoopBack1"
+
+
+def test_bgp_nbr_response_defaults_and_extras() -> None:
+    resp = BgpNbrResponse.model_validate({"local_ip": "1.1.1.1", "code": 0})
+    assert resp.local_interface is None
+    assert resp.peer_device == []
+    dumped = resp.model_dump()
+    assert dumped["code"] == 0  # extra field preserved
+    assert dumped["peer_device"] == []

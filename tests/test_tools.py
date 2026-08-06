@@ -744,3 +744,103 @@ async def test_sdn_run_command_auth_error_is_sanitized() -> None:
     assert payload["ok"] is False
     assert payload["configured"] is True
     assert "https://sdn.example" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# sdn_bgp_nbr tool (POST /controller/device-conf/bgpNbr)
+# ---------------------------------------------------------------------------
+
+_BGP_NBR_BODY = {
+    "local_ip": "172.16.11.2",
+    "local_interface": "LoopBack1",
+    "peer_device": [{"node_name": "NJ-SCT-R03", "tp_id": "LoopBack1"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("args",),
+    [
+        ({"device_name": "", "peer_ip": "10.0.0.1"},),
+        ({"device_name": "NJ-SCT-R01", "peer_ip": "  "},),
+    ],
+)
+async def test_sdn_bgp_nbr_empty_inputs_rejected(args: dict[str, Any]) -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_BGP_NBR_BODY))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_bgp_nbr", args)
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "must not be empty" in payload["detail"]
+
+
+async def test_sdn_bgp_nbr_success_envelope() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = str(request.url.path)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_BGP_NBR_BODY)
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_bgp_nbr", {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["configured"] is True
+    assert payload["local_ip"] == "172.16.11.2"
+    assert payload["local_interface"] == "LoopBack1"
+    assert payload["peer_device"][0]["node_name"] == "NJ-SCT-R03"
+    assert seen["path"] == "/controller/device-conf/bgpNbr"
+    assert seen["body"] == {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
+
+
+async def test_sdn_bgp_nbr_skeleton_mode() -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_bgp_nbr", {"device_name": "X", "peer_ip": "10.0.0.1"}
+        )
+    assert _payload(result) == {
+        "ok": False,
+        "configured": False,
+        "detail": "SDN controller not configured (skeleton mode).",
+    }
+
+
+async def test_sdn_bgp_nbr_auth_error_is_sanitized() -> None:
+    server = _v15_server(lambda _r: httpx.Response(401))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_bgp_nbr", {"device_name": "X", "peer_ip": "10.0.0.1"}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "https://sdn.example" not in json.dumps(payload)
+
+
+async def test_sdn_bgp_nbr_unexpected_error_does_not_leak() -> None:
+    class BoomClient(SDNClient):
+        async def get_bgp_nbr(self, device_name: str, peer_ip: str) -> Any:
+            raise RuntimeError("internal boom with sensitive http://secret/url")
+
+    settings = _basic_settings()
+    mcp = build_server(
+        settings,
+        sdn_client_factory=lambda: BoomClient(settings, login_transport=_login_transport()),
+    )
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_bgp_nbr", {"device_name": "X", "peer_ip": "1.1.1.1"}
+        )
+    assert result.isError is False
+    payload = _payload(result)
+    assert payload == {"ok": False, "configured": False, "detail": "Unexpected server error."}
+    assert "secret" not in json.dumps(payload)

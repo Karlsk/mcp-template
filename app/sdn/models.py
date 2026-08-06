@@ -288,3 +288,27 @@ class CommandResultResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     result: str = ""
+
+
+class BgpNbrPeerDevice(BaseModel):
+    """One peer-device entry inside a bgpNbr response."""
+
+    model_config = ConfigDict(extra="allow")
+
+    node_name: str | None = None
+    tp_id: str | None = None
+
+
+class BgpNbrResponse(BaseModel):
+    """BGP peer info (POST /controller/device-conf/bgpNbr).
+
+    Flattened per the controller sample (local_ip / local_interface /
+    peer_device). Unknown fields and outer envelopes ride extras so nothing
+    the controller adds is lost on ``model_dump()``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    local_ip: str | None = None
+    local_interface: str | None = None
+    peer_device: list[BgpNbrPeerDevice] = Field(default_factory=list)

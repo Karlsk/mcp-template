@@ -77,6 +77,7 @@ sdn-mcp-template/
 │       ├── log_tools.py          # sdn_operation_logs
 │       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
 │       ├── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
+│       ├── bgp_tools.py          # sdn_bgp_nbr（BGP 对端信息，device-conf/bgpNbr）
 │       ├── sop_tools.py          # search_sop（已实现，spec-03 SOP 图受控检索）
 │       ├── template_tools.py     # search_command_template（已实现，spec-04 命令模板库查表）
 │       ├── graph_tools.py        # get_fault_subgraph / get_topology_snapshot（占位）

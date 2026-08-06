@@ -12,6 +12,7 @@ def register_all(mcp: FastMCP) -> None:
     """Register every tool module with the given FastMCP server."""
     from . import (
         alert_tools,
+        bgp_tools,
         change_tools,
         cmd_tools,
         config_tools,
@@ -36,6 +37,7 @@ def register_all(mcp: FastMCP) -> None:
     log_tools.register(mcp)
     alert_tools.register(mcp)
     cmd_tools.register(mcp)
+    bgp_tools.register(mcp)
     sop_tools.register(mcp)
     template_tools.register(mcp)
     graph_tools.register(mcp)

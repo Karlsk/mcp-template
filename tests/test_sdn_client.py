@@ -23,6 +23,7 @@ from app.sdn.models import (
     BgpNbrResponse,
     CommandResultResponse,
     Device,
+    IsisNbrResponse,
     LinkInfo,
     OperationLogsResponse,
     PageResponse,
@@ -1144,10 +1145,10 @@ async def test_run_command_malformed_raises_sdn_error() -> None:
         await client.aclose()
 
 
-# --- get_bgp_nbr (POST /controller/device-conf/bgpNbr) -----------------------
+# --- get_bgp_nbr (GET /api/no/config/device-conf/bgp-nbr) --------------------
 
 
-async def test_get_bgp_nbr_posts_body_and_parses() -> None:
+async def test_get_bgp_nbr_gets_query_and_parses() -> None:
     seen: dict[str, object] = {}
     transport = _capturing_handler(
         {
@@ -1166,10 +1167,11 @@ async def test_get_bgp_nbr_posts_body_and_parses() -> None:
     assert isinstance(result, BgpNbrResponse)
     assert result.local_ip == "172.16.11.2"
     assert result.peer_device[0].node_name == "NJ-SCT-R03"
-    # wire contract: POST, the documented endpoint, snake_case body keys
-    assert seen["method"] == "POST"
-    assert seen["path"] == "/controller/device-conf/bgpNbr"
-    assert seen["body"] == {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
+    # wire contract: GET, the documented endpoint, snake_case query keys
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/api/no/config/device-conf/bgp-nbr"
+    assert seen["params"] == {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
+    assert seen["body"] is None
 
 
 async def test_get_bgp_nbr_malformed_raises_sdn_error() -> None:
@@ -1187,7 +1189,7 @@ async def test_get_bgp_nbr_endpoint_override() -> None:
         auth_type="bearer",
         timeout=1.0,
         retry=RetrySettings(max_retries=0, base_delay=0.0, max_delay=0.0),
-        endpoints={"health": "/", "bgp_nbr": "/custom/bgpNbr"},
+        endpoints={"health": "/", "bgp_nbr": "/custom/bgp-nbr"},
     )
     settings = Settings(sdn=sdn, sdn_controller_token=SecretStr("tok"))
     seen: dict[str, object] = {}
@@ -1197,4 +1199,64 @@ async def test_get_bgp_nbr_endpoint_override() -> None:
         await client.get_bgp_nbr("NJ-SCT-R01", "10.0.0.1")
     finally:
         await client.aclose()
-    assert seen["path"] == "/custom/bgpNbr"
+    assert seen["path"] == "/custom/bgp-nbr"
+
+
+# --- get_isis_nbr (POST topology/isisNbr) ------------------------------------
+
+
+async def test_get_isis_nbr_posts_body_and_parses() -> None:
+    seen: dict[str, object] = {}
+    transport = _capturing_handler(
+        {
+            "device_name": "NJ-SCT-R01",
+            "interface_name": "Ten-GigabitEthernet3/1/10",
+        },
+        seen,
+    )
+    client = SDNClient(make_settings(), transport=transport)
+    try:
+        result = await client.get_isis_nbr("NJ-SCT-R02", "GigabitEthernet0/4/9")
+    finally:
+        await client.aclose()
+
+    assert isinstance(result, IsisNbrResponse)
+    assert result.device_name == "NJ-SCT-R01"
+    assert result.interface_name == "Ten-GigabitEthernet3/1/10"
+    # wire contract: POST, the documented endpoint, snake_case body keys
+    assert seen["method"] == "POST"
+    assert seen["path"] == (
+        "/api/sr/config/network-topology:network-topology/topology/isisNbr"
+    )
+    assert seen["body"] == {
+        "device_name": "NJ-SCT-R02",
+        "interface_name": "GigabitEthernet0/4/9",
+    }
+
+
+async def test_get_isis_nbr_malformed_raises_sdn_error() -> None:
+    client = SDNClient(make_settings(), transport=_status_handler_for_body(b"not-json"))
+    try:
+        with pytest.raises(SDNError):
+            await client.get_isis_nbr("NJ-SCT-R02", "GigabitEthernet0/4/9")
+    finally:
+        await client.aclose()
+
+
+async def test_get_isis_nbr_endpoint_override() -> None:
+    sdn = SdnSettings(
+        base_url=BASE_URL,
+        auth_type="bearer",
+        timeout=1.0,
+        retry=RetrySettings(max_retries=0, base_delay=0.0, max_delay=0.0),
+        endpoints={"health": "/", "isis_nbr": "/custom/isisNbr"},
+    )
+    settings = Settings(sdn=sdn, sdn_controller_token=SecretStr("tok"))
+    seen: dict[str, object] = {}
+    transport = _capturing_handler({"device_name": "NJ-SCT-R01"}, seen)
+    client = SDNClient(settings, transport=transport)
+    try:
+        await client.get_isis_nbr("NJ-SCT-R02", "GigabitEthernet0/4/9")
+    finally:
+        await client.aclose()
+    assert seen["path"] == "/custom/isisNbr"

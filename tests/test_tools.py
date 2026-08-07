@@ -747,7 +747,7 @@ async def test_sdn_run_command_auth_error_is_sanitized() -> None:
 
 
 # ---------------------------------------------------------------------------
-# sdn_bgp_nbr tool (POST /controller/device-conf/bgpNbr)
+# sdn_bgp_nbr tool (GET /api/no/config/device-conf/bgp-nbr)
 # ---------------------------------------------------------------------------
 
 _BGP_NBR_BODY = {
@@ -778,8 +778,9 @@ async def test_sdn_bgp_nbr_success_envelope() -> None:
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
         seen["path"] = str(request.url.path)
-        seen["body"] = json.loads(request.content)
+        seen["params"] = dict(request.url.params)
         return httpx.Response(200, json=_BGP_NBR_BODY)
 
     server = _v15_server(handler)
@@ -794,8 +795,9 @@ async def test_sdn_bgp_nbr_success_envelope() -> None:
     assert payload["local_ip"] == "172.16.11.2"
     assert payload["local_interface"] == "LoopBack1"
     assert payload["peer_device"][0]["node_name"] == "NJ-SCT-R03"
-    assert seen["path"] == "/controller/device-conf/bgpNbr"
-    assert seen["body"] == {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/api/no/config/device-conf/bgp-nbr"
+    assert seen["params"] == {"device_name": "NJ-SCT-R01", "peer_ip": "10.0.0.1"}
 
 
 async def test_sdn_bgp_nbr_skeleton_mode() -> None:
@@ -843,4 +845,91 @@ async def test_sdn_bgp_nbr_unexpected_error_does_not_leak() -> None:
     assert result.isError is False
     payload = _payload(result)
     assert payload == {"ok": False, "configured": False, "detail": "Unexpected server error."}
+
+
+# ---------------------------------------------------------------------------
+# sdn_isis_nbr tool (POST topology/isisNbr)
+# ---------------------------------------------------------------------------
+
+_ISIS_NBR_BODY = {
+    "device_name": "NJ-SCT-R01",
+    "interface_name": "Ten-GigabitEthernet3/1/10",
+}
+
+
+@pytest.mark.parametrize(
+    ("args",),
+    [
+        ({"device_name": "", "interface_name": "GigabitEthernet0/4/9"},),
+        ({"device_name": "NJ-SCT-R02", "interface_name": "  "},),
+    ],
+)
+async def test_sdn_isis_nbr_empty_inputs_rejected(args: dict[str, Any]) -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_ISIS_NBR_BODY))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_isis_nbr", args)
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "must not be empty" in payload["detail"]
+
+
+async def test_sdn_isis_nbr_success_envelope() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = str(request.url.path)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_ISIS_NBR_BODY)
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_isis_nbr",
+            {"device_name": "NJ-SCT-R02", "interface_name": "GigabitEthernet0/4/9"},
+        )
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["configured"] is True
+    assert payload["device_name"] == "NJ-SCT-R01"
+    assert payload["interface_name"] == "Ten-GigabitEthernet3/1/10"
+    assert seen["method"] == "POST"
+    assert seen["path"] == (
+        "/api/sr/config/network-topology:network-topology/topology/isisNbr"
+    )
+    assert seen["body"] == {
+        "device_name": "NJ-SCT-R02",
+        "interface_name": "GigabitEthernet0/4/9",
+    }
+
+
+async def test_sdn_isis_nbr_skeleton_mode() -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_isis_nbr",
+            {"device_name": "X", "interface_name": "GigabitEthernet0/4/9"},
+        )
+    assert _payload(result) == {
+        "ok": False,
+        "configured": False,
+        "detail": "SDN controller not configured (skeleton mode).",
+    }
+
+
+async def test_sdn_isis_nbr_auth_error_is_sanitized() -> None:
+    server = _v15_server(lambda _r: httpx.Response(401))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_isis_nbr",
+            {"device_name": "X", "interface_name": "GigabitEthernet0/4/9"},
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "https://sdn.example" not in json.dumps(payload)
     assert "secret" not in json.dumps(payload)

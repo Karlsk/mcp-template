@@ -46,6 +46,7 @@ from app.sdn.models import (
     BgpNbrResponse,
     CommandResultResponse,
     Device,
+    IsisNbrResponse,
     LinkInfo,
     OperationLogsResponse,
     PageResponse,
@@ -642,21 +643,41 @@ class SDNClient:
             raise SDNError("SDN command-result response was malformed.", detail=str(exc)) from exc
 
     async def get_bgp_nbr(self, device_name: str, peer_ip: str) -> BgpNbrResponse:
-        """BGP peer info for one (device, peer) pair (POST device-conf/bgpNbr).
+        """BGP peer info for one (device, peer) pair (GET device-conf/bgp-nbr).
 
         Returns the local IP/interface of the BGP session plus the peer-device
         entries. Unknown response fields ride extras (``extra="allow"``).
         """
         endpoint = self._settings.sdn.endpoints.get(
-            "bgp_nbr", "/controller/device-conf/bgpNbr"
+            "bgp_nbr", "/api/no/config/device-conf/bgp-nbr"
         )
         resp = await self.request(
-            "POST", endpoint, json={"device_name": device_name, "peer_ip": peer_ip}
+            "GET", endpoint, params={"device_name": device_name, "peer_ip": peer_ip}
         )
         try:
             return BgpNbrResponse.model_validate(resp.json())
         except (ValueError, ValidationError) as exc:
             raise SDNError("SDN bgp-nbr response was malformed.", detail=str(exc)) from exc
+
+    async def get_isis_nbr(self, device_name: str, interface_name: str) -> IsisNbrResponse:
+        """ISIS peer on one local interface (POST topology/isisNbr).
+
+        Returns the peer side of the adjacency (peer device name + its facing
+        interface). Unknown response fields ride extras (``extra="allow"``).
+        """
+        endpoint = self._settings.sdn.endpoints.get(
+            "isis_nbr",
+            "/api/sr/config/network-topology:network-topology/topology/isisNbr",
+        )
+        resp = await self.request(
+            "POST",
+            endpoint,
+            json={"device_name": device_name, "interface_name": interface_name},
+        )
+        try:
+            return IsisNbrResponse.model_validate(resp.json())
+        except (ValueError, ValidationError) as exc:
+            raise SDNError("SDN isis-nbr response was malformed.", detail=str(exc)) from exc
 
     async def aclose(self) -> None:
         """Release the underlying HTTP clients. Idempotent."""

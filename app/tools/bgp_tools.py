@@ -1,8 +1,9 @@
 """BGP peer info tool — query one (device, peer) BGP session's details.
 
-Thin adapter over :class:`SDNClient.get_bgp_nbr` (POST
-``/controller/device-conf/bgpNbr``). Returns the local IP/interface of the
-session plus the peer-device entries; unknown response fields ride extras.
+Thin adapter over :class:`SDNClient.get_bgp_nbr` (GET
+``/api/no/config/device-conf/bgp-nbr`` with device_name/peer_ip query).
+Returns the local IP/interface of the session plus the peer-device entries;
+unknown response fields ride extras.
 """
 
 from __future__ import annotations

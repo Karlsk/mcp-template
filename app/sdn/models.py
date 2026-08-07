@@ -300,7 +300,7 @@ class BgpNbrPeerDevice(BaseModel):
 
 
 class BgpNbrResponse(BaseModel):
-    """BGP peer info (POST /controller/device-conf/bgpNbr).
+    """BGP peer info (GET /api/no/config/device-conf/bgp-nbr).
 
     Flattened per the controller sample (local_ip / local_interface /
     peer_device). Unknown fields and outer envelopes ride extras so nothing
@@ -312,3 +312,16 @@ class BgpNbrResponse(BaseModel):
     local_ip: str | None = None
     local_interface: str | None = None
     peer_device: list[BgpNbrPeerDevice] = Field(default_factory=list)
+
+
+class IsisNbrResponse(BaseModel):
+    """ISIS peer info (POST topology/isisNbr).
+
+    The controller answers with the peer side of the adjacency: the peer
+    device's name and its interface facing us. Unknown fields ride extras.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    device_name: str | None = None
+    interface_name: str | None = None

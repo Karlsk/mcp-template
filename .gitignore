@@ -29,3 +29,4 @@ config/*local*.yaml
 .qoder/
 .idea/
 .vscode/
+.DS_Store

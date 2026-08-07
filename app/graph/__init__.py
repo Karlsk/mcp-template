@@ -1,6 +1,7 @@
 """SOP graph integration: client, models, and error hierarchy."""
 
 from app.graph.client import GraphClient
+from app.graph.envelope import event_payload, node_to_json, node_type
 from app.graph.exceptions import (
     GraphAuthError,
     GraphConfigError,
@@ -22,4 +23,7 @@ __all__ = [
     "SOPEdge",
     "SOPNode",
     "SOPTree",
+    "event_payload",
+    "node_to_json",
+    "node_type",
 ]

@@ -292,7 +292,9 @@ async def test_tree_truncation_when_nodes_exceed_budget() -> None:
 
     assert tree is not None
     assert tree.truncated is True
-    assert len(tree.nodes) == MAX_SOP_NODES
+    # MAX_SOP_NODES real nodes + 1 synthetic Output (all steps are dangling)
+    assert len(tree.nodes) == MAX_SOP_NODES + 1
+    assert any(n.id == "__no_conclusion__" for n in tree.nodes)
 
 
 async def test_cyclic_graph_returns_without_hanging() -> None:

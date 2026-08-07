@@ -22,7 +22,7 @@ them must be mapped onto a sanitized message.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Final
 
 import neo4j
 from neo4j import AsyncDriver
@@ -36,6 +36,7 @@ from app.graph.cypher import (
     LABEL_STEP,
     MAX_SOP_DEPTH,
     MAX_SOP_NODES,
+    REL_SEQUENCE,
     RESOLVE_EVENT_BY_NAME,
     SOP_TREE_EDGES,
     sop_tree_nodes,
@@ -54,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 _KNOWN_LABELS = frozenset({LABEL_EVENT, LABEL_STEP, LABEL_OUTPUT})
 
+# Synthetic Output node for dangling paths (spec-05 §3.4: dead-end nodes get
+# a unified "no conclusion" Output so the tree is always fully terminated).
+_SYNTHETIC_OUTPUT_ID: Final = "__no_conclusion__"
+_SYNTHETIC_OUTPUT_NAME: Final = "未终结"
+_SYNTHETIC_OUTPUT_REASON: Final = "该路径无明确结论，大模型根据上下文进行总结"  # noqa: RUF001
+
 
 def _normalize(value: str | None) -> str | None:
     """Case-insensitive matching starts client-side: strip + lower; empty -> None."""
@@ -71,6 +78,16 @@ def _kind_from_labels(labels: object) -> str:
     if isinstance(labels, list) and labels:
         return str(labels[0]).lower()
     return ""
+
+
+def _detect_dangling_nodes(nodes: list[SOPNode], edges: list[SOPEdge]) -> list[SOPNode]:
+    """Nodes with no outgoing edges that are not Output nodes.
+
+    These are dead-end paths that never reach a conclusion; a synthetic Output
+    is appended to keep the tree semantically complete.
+    """
+    sources = {e.source for e in edges}
+    return [n for n in nodes if n.id not in sources and n.kind != "output"]
 
 
 def _label_from_labels(labels: object) -> str:
@@ -286,16 +303,35 @@ class GraphClient:
             db_tag=db,
             query_name="sop_tree_edges",
         )
+        edges = [SOPEdge.model_validate(r) for r in edge_rows]
         event = next((n for n in nodes if n.kind == "event"), None)
         if event is None:
             raise GraphQueryError(
                 "SOP graph response was malformed.",
                 detail=f"no Event node in tree rows for {db}/{event_name}",
             )
+        dangling = _detect_dangling_nodes(nodes, edges)
+        if dangling:
+            synthetic = SOPNode.model_validate({
+                "id": _SYNTHETIC_OUTPUT_ID,
+                "kind": "output",
+                "name": _SYNTHETIC_OUTPUT_NAME,
+                "reason": _SYNTHETIC_OUTPUT_REASON,
+                "label": LABEL_OUTPUT,
+            })
+            nodes.append(synthetic)
+            for dn in dangling:
+                edges.append(
+                    SOPEdge(
+                        source=dn.id,
+                        target=_SYNTHETIC_OUTPUT_ID,
+                        rel_type=REL_SEQUENCE,
+                    )
+                )
         return SOPTree(
             db=db,
             event=event,
             nodes=nodes,
-            edges=[SOPEdge.model_validate(r) for r in edge_rows],
+            edges=edges,
             truncated=truncated,
         )

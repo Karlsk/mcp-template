@@ -9,11 +9,12 @@ from app.sdn.exceptions import (
     SDNHTTPError,
     SDNNotFoundError,
 )
-from app.sdn.models import BgpNbrPeerDevice, BgpNbrResponse, SDNHealthResponse
+from app.sdn.models import BgpNbrPeerDevice, BgpNbrResponse, IsisNbrResponse, SDNHealthResponse
 
 __all__ = [
     "BgpNbrPeerDevice",
     "BgpNbrResponse",
+    "IsisNbrResponse",
     "SDNAuthError",
     "SDNClient",
     "SDNConfigError",

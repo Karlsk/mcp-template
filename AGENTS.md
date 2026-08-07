@@ -78,7 +78,8 @@ sdn-mcp-template/
 │       ├── log_tools.py          # sdn_operation_logs
 │       ├── alert_tools.py        # sdn_device_alerts（§3.5 新告警工具）
 │       ├── cmd_tools.py          # sdn_run_command（设备命令，默认只读 allow_write 覆盖）
-│       ├── bgp_tools.py          # sdn_bgp_nbr（BGP 对端信息，device-conf/bgpNbr）
+│       ├── bgp_tools.py          # sdn_bgp_nbr（BGP 对端信息，GET device-conf/bgp-nbr）
+│       ├── isis_tools.py         # sdn_isis_nbr（ISIS 邻居，POST topology/isisNbr）
 │       ├── sop_tools.py          # search_sop（已实现，spec-03 SOP 图受控检索）
 │       ├── template_tools.py     # search_command_template（已实现，spec-04 命令模板库查表）
 │       ├── graph_tools.py        # get_fault_subgraph / get_topology_snapshot（占位）
@@ -343,7 +344,7 @@ MCP tool 函数 (app/tools/*.py)
 
 同步：端点写进 `config/sdn_controller.yaml` 的 `sdn.endpoints`；补测试（见 §11）。
 
-> v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
+> v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`/`get_bgp_nbr`/`get_isis_nbr`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。`get_bgp_nbr` 为 GET（`device_name`/`peer_ip` query 参数），`get_isis_nbr` 为 POST（`device_name`/`interface_name` body）。
 
 > **GraphClient 侧已落地方法（spec-03/05，与上面 SDN v1.5 清单分开）**：`find_sop_events`（发现：精确/模糊两段）/`resolve_sop_event`（跨库按 Event 名反查）/`get_sop_tree`（展树：锁定逻辑库），均追加在类尾、走私有 `_run` 薄封装（驱动异常唯一映射点）。
 

@@ -13,6 +13,7 @@ from app.sdn.models import (
     BgpNbrResponse,
     CommandResultResponse,
     Device,
+    IsisNbrResponse,
     LinkInfo,
     OperationLog,
     OperationLogsResponse,
@@ -418,3 +419,24 @@ def test_bgp_nbr_response_defaults_and_extras() -> None:
     dumped = resp.model_dump()
     assert dumped["code"] == 0  # extra field preserved
     assert dumped["peer_device"] == []
+
+
+# --- ISIS neighbor (isisNbr) -------------------------------------------------
+
+
+def test_isis_nbr_response_parses_sample() -> None:
+    resp = IsisNbrResponse.model_validate(
+        {
+            "device_name": "NJ-SCT-R01",
+            "interface_name": "Ten-GigabitEthernet3/1/10",
+        }
+    )
+    assert resp.device_name == "NJ-SCT-R01"
+    assert resp.interface_name == "Ten-GigabitEthernet3/1/10"
+
+
+def test_isis_nbr_response_defaults_and_extras() -> None:
+    resp = IsisNbrResponse.model_validate({"device_name": "NJ-SCT-R01", "code": 0})
+    assert resp.interface_name is None
+    dumped = resp.model_dump()
+    assert dumped["code"] == 0  # extra field preserved

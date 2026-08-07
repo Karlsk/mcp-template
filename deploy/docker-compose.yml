@@ -18,6 +18,10 @@ services:
       SDN_CONTROLLER_USERNAME: "${SDN_CONTROLLER_USERNAME:-}"
       SDN_CONTROLLER_PASSWORD: "${SDN_CONTROLLER_PASSWORD:-}"
       SDN_CONTROLLER_TOKEN: "${SDN_CONTROLLER_TOKEN:-}"
+      # SOP graph (Neo4j) connection — same secret policy as above.
+      NEO4J_URI: "${NEO4J_URI:-}"
+      NEO4J_USERNAME: "${NEO4J_USERNAME:-}"
+      NEO4J_PASSWORD: "${NEO4J_PASSWORD:-}"
       SDN_CONFIG_FILE: "/app/config/sdn_controller.yaml"
     volumes:
       # Override config without rebuilding the image.

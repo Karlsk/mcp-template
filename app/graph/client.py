@@ -250,18 +250,19 @@ class GraphClient:
         return [SOPCandidate.model_validate(row) for row in rows]
 
     async def get_sop_tree(
-        self, *, db: str, event_id: str, max_depth: int = MAX_SOP_DEPTH
+        self, *, db: str, event_name: str, max_depth: int = MAX_SOP_DEPTH
     ) -> SOPTree | None:
         """Fetch one complete SOP tree, scoped to a single logical database.
 
-        Returns None when no Event matches ``(db, event_id)``. Traversal is confined
-        to ``db``: every node on every path must carry the same ``database``.
+        Returns None when no Event matches ``(db, event_name)``. Traversal is
+        confined to ``db``: every node AND every relationship on every path
+        must carry the same ``database`` property (spec-05 §1.2).
         """
         self._require_configured()
         depth = max(1, min(int(max_depth), MAX_SOP_DEPTH))
         rows = await self._run(
             sop_tree_nodes(depth),
-            {"event_id": event_id, "node_limit": MAX_SOP_NODES + 1},
+            {"event_name": event_name, "node_limit": MAX_SOP_NODES + 1},
             db_tag=db,
             query_name="sop_tree_nodes",
         )
@@ -280,7 +281,7 @@ class GraphClient:
         if event is None:
             raise GraphQueryError(
                 "SOP graph response was malformed.",
-                detail=f"no Event node in tree rows for {db}/{event_id}",
+                detail=f"no Event node in tree rows for {db}/{event_name}",
             )
         return SOPTree(
             db=db,

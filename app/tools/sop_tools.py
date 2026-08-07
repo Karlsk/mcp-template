@@ -108,11 +108,13 @@ def register(mcp: FastMCP) -> None:
             if not graph.configured:
                 return graph_skeleton_payload()
 
-            # Direct expansion: (db, event_id) locates exactly one tree.
+            # Direct expansion: (db, event_name) locates exactly one tree.
+            # The frozen tool parameter ``event_id`` carries the Event name
+            # (spec-05 §3.2: locating always goes through the name).
             if event_id and db:
                 return _tree_payload(
                     await graph.get_sop_tree(
-                        db=db, event_id=event_id, max_depth=max_depth
+                        db=db, event_name=event_id, max_depth=max_depth
                     ),
                     "exact",
                 )
@@ -123,7 +125,7 @@ def register(mcp: FastMCP) -> None:
                 if len(found) == 1:
                     return _tree_payload(
                         await graph.get_sop_tree(
-                            db=found[0].db, event_id=event_id, max_depth=max_depth
+                            db=found[0].db, event_name=event_id, max_depth=max_depth
                         ),
                         "exact",
                     )
@@ -144,7 +146,7 @@ def register(mcp: FastMCP) -> None:
                 only = candidates[0]
                 return _tree_payload(
                     await graph.get_sop_tree(
-                        db=only.db, event_id=only.event_name, max_depth=max_depth
+                        db=only.db, event_name=only.event_name, max_depth=max_depth
                     ),
                     match,
                 )

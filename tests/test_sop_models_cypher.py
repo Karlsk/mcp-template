@@ -107,14 +107,10 @@ def test_sop_tree_nodes_inlines_validated_depth() -> None:
 def test_sop_tree_edges_locks_both_endpoints_and_relationships() -> None:
     stmt = cypher.SOP_TREE_EDGES
     # spec-05 §3.3: a/b/r all carry the tenancy property.
-    assert (
-        "a.database = $database AND b.database = $database"
-        " AND r.database = $database" in stmt
-    )
-    assert (
-        "coalesce(a.id, elementId(a)) IN $node_ids"
-        " AND coalesce(b.id, elementId(b)) IN $node_ids" in stmt
-    )
+    assert "a.database = $database AND b.database = $database" in stmt
+    assert "AND r.database = $database" in stmt
+    assert "coalesce(a.id, elementId(a)) IN $node_ids" in stmt
+    assert "coalesce(b.id, elementId(b)) IN $node_ids" in stmt
     assert "[r:Sequence|Branch]" in stmt
     # Edge type + condition echo: Sequence edges come back with null condition.
     assert "type(r) AS rel_type" in stmt

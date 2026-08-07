@@ -13,9 +13,9 @@ from typing import Final
 LABEL_EVENT: Final = "Event"
 LABEL_STEP: Final = "Step"
 LABEL_OUTPUT: Final = "Output"
-REL_NEXT: Final = "NEXT"  # legacy spec-03 relationship; tree queries only
-REL_SEQUENCE: Final = "Sequence"
-REL_BRANCH: Final = "Branch"
+
+REL_SEQUENCE: Final = "Sequence"   # plain next-step edge (no Condition)
+REL_BRANCH: Final = "Branch"       # conditional edge (carries Condition)
 DB_PROPERTY: Final = "database"    # real property name; nodes AND relationships
 
 PROP_ACTION: Final = "Action"
@@ -105,28 +105,36 @@ def sop_tree_nodes(max_depth: int) -> str:
     """
     return f"""
 MATCH (e:{LABEL_EVENT})
-WHERE e.{DB_PROPERTY} = $database AND e.id = $event_id
-OPTIONAL MATCH path = (e)-[:{REL_NEXT}*1..{max_depth}]->(m)
+WHERE e.{DB_PROPERTY} = $database AND toLower(e.name) = toLower($event_name)
+OPTIONAL MATCH path = (e)-[:{REL_SEQUENCE}|{REL_BRANCH}*1..{max_depth}]->(m)
 WHERE ALL(n IN nodes(path) WHERE n.{DB_PROPERTY} = $database)
+  AND ALL(r IN relationships(path) WHERE r.{DB_PROPERTY} = $database)
 WITH e, collect(DISTINCT m) AS reached
 UNWIND ([e] + reached) AS n
 WITH DISTINCT n WHERE n IS NOT NULL
-RETURN n.id AS id, labels(n) AS labels, n.name AS name,
-       coalesce(n.action, '') AS action,
-       coalesce(n.observation, '') AS observation,
-       coalesce(n.answer, '') AS answer,
+RETURN coalesce(n.id, elementId(n)) AS id, labels(n) AS labels,
+       coalesce(n.name, '') AS name,
+       {ACTION_EXPR} AS action,
+       {OBSERVATION_EXPR} AS observation,
+       {FINAL_ANSWER_EXPR} AS final_answer,
        properties(n) AS props
 LIMIT $node_limit
 """
 
 
-# Second tree step: edges within the settled node set. Both endpoints carry a
-# ``database`` filter; a missing ``condition`` property returns null, which the
-# model's ``condition: str | None`` reads as "unconditional edge".
+# Second tree step: edges within the settled node set. Both endpoints AND the
+# relationship itself carry the tenancy property (spec-05 §1.2); a missing
+# ``Condition`` property returns null, which the model's
+# ``condition: str | None`` reads as "unconditional (Sequence) edge".
 SOP_TREE_EDGES = f"""
-MATCH (a)-[r:{REL_NEXT}]->(b)
+MATCH (a)-[r:{REL_SEQUENCE}|{REL_BRANCH}]->(b)
 WHERE a.{DB_PROPERTY} = $database AND b.{DB_PROPERTY} = $database
-  AND a.id IN $node_ids AND b.id IN $node_ids
-RETURN a.id AS source, b.id AS target, r.condition AS condition
+  AND r.{DB_PROPERTY} = $database
+  AND coalesce(a.id, elementId(a)) IN $node_ids
+  AND coalesce(b.id, elementId(b)) IN $node_ids
+RETURN coalesce(a.id, elementId(a)) AS source,
+       coalesce(b.id, elementId(b)) AS target,
+       type(r) AS rel_type,
+       r.{PROP_CONDITION} AS condition
 ORDER BY source, target
 """

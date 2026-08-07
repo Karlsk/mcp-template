@@ -225,7 +225,7 @@ async def test_tree_shapes_nodes_kinds_and_edge_conditions() -> None:
     driver = FakeNeo4jDriver(records_handler=tree_handler(BRANCH_NODES, BRANCH_EDGES))
     graph = GraphClient(make_settings(), driver=driver)
 
-    tree = await graph.get_sop_tree(db="lib_a", event_id="E1")
+    tree = await graph.get_sop_tree(db="lib_a", event_name="Link Down")
 
     assert tree is not None
     assert tree.db == "lib_a"
@@ -254,7 +254,7 @@ async def test_tree_expansion_locks_the_logical_db() -> None:
     spy = RunReadSpy(graph)
     graph._neo4j.run_read = spy  # type: ignore[method-assign]
 
-    await graph.get_sop_tree(db="lib_a", event_id="E1")
+    await graph.get_sop_tree(db="lib_a", event_name="Link Down")
 
     assert [c["db_tag"] for c in spy.calls] == ["lib_a", "lib_a"]
     assert all(c["allow_cross_db"] is False for c in spy.calls)
@@ -268,7 +268,7 @@ async def test_tree_truncation_when_nodes_exceed_budget() -> None:
     driver = FakeNeo4jDriver(records_handler=tree_handler(rows, []))
     graph = GraphClient(make_settings(), driver=driver)
 
-    tree = await graph.get_sop_tree(db="lib_a", event_id="E1")
+    tree = await graph.get_sop_tree(db="lib_a", event_name="Link Down")
 
     assert tree is not None
     assert tree.truncated is True
@@ -290,7 +290,7 @@ async def test_cyclic_graph_returns_without_hanging() -> None:
     driver = FakeNeo4jDriver(records_handler=tree_handler(nodes, edges))
     graph = GraphClient(make_settings(), driver=driver)
 
-    tree = await graph.get_sop_tree(db="lib_a", event_id="E1")
+    tree = await graph.get_sop_tree(db="lib_a", event_name="Link Down")
 
     assert tree is not None
     assert len(tree.nodes) == 3
@@ -304,18 +304,18 @@ async def test_tree_without_event_node_raises_safe_error() -> None:
     graph = GraphClient(make_settings(), driver=driver)
 
     with pytest.raises(GraphQueryError) as excinfo:
-        await graph.get_sop_tree(db="lib_a", event_id="E1")
+        await graph.get_sop_tree(db="lib_a", event_name="Link Down")
 
     assert str(excinfo.value) == "SOP graph response was malformed."
     assert "lib_a" in excinfo.value.detail
-    assert "E1" in excinfo.value.detail
+    assert "Link Down" in excinfo.value.detail
 
 
 async def test_tree_not_found_returns_none() -> None:
     driver = FakeNeo4jDriver(records=[])
     graph = GraphClient(make_settings(), driver=driver)
 
-    assert await graph.get_sop_tree(db="lib_a", event_id="missing") is None
+    assert await graph.get_sop_tree(db="lib_a", event_name="missing") is None
 
 
 async def test_cross_db_same_id_does_not_merge_trees() -> None:
@@ -333,8 +333,8 @@ async def test_cross_db_same_id_does_not_merge_trees() -> None:
     driver = FakeNeo4jDriver(records_handler=handler)
     graph = GraphClient(make_settings(), driver=driver)
 
-    tree_a = await graph.get_sop_tree(db="lib_a", event_id="E1")
-    tree_b = await graph.get_sop_tree(db="lib_b", event_id="E1")
+    tree_a = await graph.get_sop_tree(db="lib_a", event_name="Link Down")
+    tree_b = await graph.get_sop_tree(db="lib_b", event_name="Link Down")
 
     assert tree_a is not None and tree_b is not None
     ids_a = {n.id for n in tree_a.nodes}
@@ -353,7 +353,10 @@ async def test_max_depth_is_inlined_into_the_nodes_query() -> None:
     driver = FakeNeo4jDriver(records_handler=tree_handler(BRANCH_NODES, BRANCH_EDGES))
     graph = GraphClient(make_settings(), driver=driver)
 
-    await graph.get_sop_tree(db="lib_a", event_id="E1", max_depth=5)
+    await graph.get_sop_tree(db="lib_a", event_name="Link Down", max_depth=5)
 
     assert driver.calls[0]["cypher"] == sop_tree_nodes(5)
     assert "*1..5" in driver.calls[0]["cypher"]
+    # The locator is (db, event_name); the raw name rides along as-is because
+    # the Cypher applies toLower() on both sides (spec-05 §3.3).
+    assert driver.calls[0]["params"]["event_name"] == "Link Down"

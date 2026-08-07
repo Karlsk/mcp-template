@@ -21,7 +21,8 @@ from app.graph.cypher import (
     LABEL_EVENT,
     LABEL_OUTPUT,
     LABEL_STEP,
-    REL_NEXT,
+    REL_BRANCH,
+    REL_SEQUENCE,
 )
 from app.graph.models import GraphFragment, SOPEdge
 from app.settings import Neo4jSettings, Settings
@@ -162,7 +163,8 @@ def test_cypher_constants() -> None:
     assert LABEL_EVENT == "Event"
     assert LABEL_STEP == "Step"
     assert LABEL_OUTPUT == "Output"
-    assert REL_NEXT == "NEXT"
+    assert REL_SEQUENCE == "Sequence"
+    assert REL_BRANCH == "Branch"
     assert DB_PROPERTY == "database"
 
 

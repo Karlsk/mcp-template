@@ -29,23 +29,23 @@ CANDIDATE_ROW = {
 TREE_NODES = [
     {
         "id": "E1", "labels": ["Event"], "name": "Link Down",
-        "action": "", "observation": "", "answer": "",
+        "action": "", "observation": "", "final_answer": "",
         "props": {"id": "E1", "name": "Link Down", "database": "lib_a"},
     },
     {
         "id": "S1", "labels": ["Step"], "name": "Check interface",
         "action": "verify_interface_state", "observation": "oper_state",
-        "answer": "", "props": {"id": "S1", "name": "Check interface", "database": "lib_a"},
+        "final_answer": "", "props": {"id": "S1", "name": "Check interface", "database": "lib_a"},
     },
     {
         "id": "O1", "labels": ["Output"], "name": "Close",
-        "action": "", "observation": "", "answer": "Link is fine.",
+        "action": "", "observation": "", "final_answer": "Link is fine.",
         "props": {"id": "O1", "name": "Close", "database": "lib_a"},
     },
 ]
 TREE_EDGES = [
-    {"source": "E1", "target": "S1", "condition": None},
-    {"source": "S1", "target": "O1", "condition": "oper_state=down"},
+    {"source": "E1", "target": "S1", "rel_type": "Sequence", "condition": None},
+    {"source": "S1", "target": "O1", "rel_type": "Branch", "condition": "oper_state=down"},
 ]
 
 

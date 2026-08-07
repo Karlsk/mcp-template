@@ -8,12 +8,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SOPEdge(BaseModel):
-    """A :NEXT edge. ``condition`` is None for a plain (unconditional) edge."""
+    """A Sequence/Branch edge (spec-05 §3.3).
+
+    ``rel_type`` echoes ``type(r)`` (plain next-step = Sequence, conditional =
+    Branch); ``condition`` is None for Sequence edges and echoes ``Condition``
+    on Branch edges.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     source: str = ""
     target: str = ""
+    rel_type: str = "Sequence"
     condition: str | None = None
 
 
@@ -27,7 +33,7 @@ class SOPNode(BaseModel):
     name: str = ""
     action: str = ""          # Step only: the command-template intent key
     observation: str = ""     # Step only: field to extract from the command output
-    answer: str = ""          # Output only
+    reason: str = ""          # Output only: the final-answer wording (spec-05 §4)
 
 
 class SOPCandidate(BaseModel):

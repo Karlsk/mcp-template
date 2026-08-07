@@ -175,7 +175,10 @@ def test_graph_fragment_is_serialization_neutral() -> None:
         truncated=True,
     )
     dumped = fragment.model_dump()
-    assert dumped["edges"] == [{"source": "e1", "target": "s1", "condition": None}]
+    # spec-05 §4: edges echo rel_type (Sequence default) alongside condition.
+    assert dumped["edges"] == [
+        {"source": "e1", "target": "s1", "rel_type": "Sequence", "condition": None}
+    ]
     assert dumped["truncated"] is True
 
 

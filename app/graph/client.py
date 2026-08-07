@@ -73,20 +73,29 @@ def _kind_from_labels(labels: object) -> str:
     return ""
 
 
+def _label_from_labels(labels: object) -> str:
+    """First label verbatim — the envelope echoes it as ``label`` (spec-05 §5)."""
+    if isinstance(labels, list) and labels:
+        return str(labels[0])
+    return ""
+
+
 def _to_node(row: dict[str, Any]) -> SOPNode:
     """Build a SOPNode from one sop_tree_nodes row.
 
-    Typed fields come from the coalesced RETURN columns; ``props`` is merged
-    afterwards so schema evolution survives via ``extra="allow"`` (typed
-    values win over raw props).
+    Typed fields come from the coalesced RETURN columns (the dual-case
+    reconciliation already happened in Cypher, spec-05 §3.1); ``props`` is
+    merged afterwards so schema evolution survives via ``extra="allow"``
+    (typed values win over raw props).
     """
     data: dict[str, Any] = {
         "id": row.get("id") or "",
         "kind": _kind_from_labels(row.get("labels")),
+        "label": _label_from_labels(row.get("labels")),
         "name": row.get("name") or "",
         "action": row.get("action") or "",
         "observation": row.get("observation") or "",
-        "answer": row.get("answer") or "",
+        "reason": row.get("final_answer") or "",
     }
     props = row.get("props")
     if isinstance(props, dict):

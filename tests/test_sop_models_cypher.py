@@ -4,7 +4,7 @@ schema realigned by spec-05 §3)."""
 from __future__ import annotations
 
 from app.graph import cypher
-from app.graph.models import SOPCandidate, SOPNode, SOPTree
+from app.graph.models import SOPCandidate, SOPEdge, SOPNode, SOPTree
 
 
 def test_cypher_budget_constants() -> None:
@@ -128,6 +128,15 @@ def test_resolve_event_by_name_is_cross_db_safe() -> None:
     assert "coalesce(e.id, elementId(e)) AS event_id" in stmt
 
 
+def test_sop_edge_defaults_and_extra_allow() -> None:
+    """spec-05 §4: ``rel_type`` defaults to Sequence; condition stays None."""
+    edge = SOPEdge()
+    assert edge.source == ""
+    assert edge.target == ""
+    assert edge.rel_type == "Sequence"
+    assert edge.condition is None
+
+
 def test_sop_node_defaults_and_extra_allow() -> None:
     node = SOPNode()
     assert node.id == ""
@@ -135,7 +144,8 @@ def test_sop_node_defaults_and_extra_allow() -> None:
     assert node.name == ""
     assert node.action == ""
     assert node.observation == ""
-    assert node.answer == ""
+    # spec-05 §4: the Output closing wording was renamed answer -> reason.
+    assert node.reason == ""
     flexible = SOPNode.model_validate({"id": "S1", "kind": "step", "vendor_extra": 1})
     assert flexible.vendor_extra == 1  # type: ignore[attr-defined]
 

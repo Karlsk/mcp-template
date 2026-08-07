@@ -41,7 +41,7 @@ def node_row(
         "name": name,
         "action": extra.pop("action", ""),
         "observation": extra.pop("observation", ""),
-        "answer": extra.pop("answer", ""),
+        "final_answer": extra.pop("final_answer", ""),
         "props": {"id": node_id, "name": name, "database": db, **extra},
     }
 
@@ -197,6 +197,19 @@ async def test_resolve_sop_event_is_cross_db_reverse_lookup() -> None:
     assert spy.calls[0]["allow_cross_db"] is True
 
 
+async def test_resolve_sop_event_same_name_across_dbs_returns_all_hits() -> None:
+    """spec-05 §6.7: one name in two logical dbs -> two candidates, no guess."""
+    rows = [CANDIDATE_ROW, dict(CANDIDATE_ROW, db="lib_b", event_id="E9")]
+    driver = FakeNeo4jDriver(records=rows)
+    graph = GraphClient(make_settings(), driver=driver)
+
+    found = await graph.resolve_sop_event("Link Down")
+
+    assert len(found) == 2
+    assert {c.db for c in found} == {"lib_a", "lib_b"}
+    assert all(c.event_name == "Link Down" for c in found)
+
+
 # ---------------------------------------------------------------------------
 # Tree expansion: get_sop_tree
 # ---------------------------------------------------------------------------
@@ -208,15 +221,15 @@ BRANCH_NODES = [
     node_row("S2", "Step", name="Check optics", action="verify_optics",
              observation="rx_power"),
     node_row("S3", "Step", name="Check neighbor", action="verify_neighbor"),
-    node_row("O1", "Output", name="Close", answer="Link is fine."),
-    node_row("O2", "Output", name="Escalate", answer="Open a ticket."),
+    node_row("O1", "Output", name="Close", final_answer="Link is fine."),
+    node_row("O2", "Output", name="Escalate", final_answer="Open a ticket."),
 ]
 BRANCH_EDGES = [
-    {"source": "E1", "target": "S1", "condition": None},
-    {"source": "S1", "target": "S2", "condition": "oper_state=up"},
-    {"source": "S1", "target": "O1", "condition": "oper_state=down"},
-    {"source": "S2", "target": "S3", "condition": None},
-    {"source": "S3", "target": "O2", "condition": None},
+    {"source": "E1", "target": "S1", "rel_type": "Sequence", "condition": None},
+    {"source": "S1", "target": "S2", "rel_type": "Branch", "condition": "oper_state=up"},
+    {"source": "S1", "target": "O1", "rel_type": "Branch", "condition": "oper_state=down"},
+    {"source": "S2", "target": "S3", "rel_type": "Sequence", "condition": None},
+    {"source": "S3", "target": "O2", "rel_type": "Sequence", "condition": None},
 ]
 
 
@@ -241,9 +254,16 @@ async def test_tree_shapes_nodes_kinds_and_edge_conditions() -> None:
     # props are merged via extra="allow" (schema evolution preserved).
     assert s1.model_extra is not None
     assert s1.model_extra["database"] == "lib_a"
-    by_pair = {(e.source, e.target): e.condition for e in tree.edges}
-    assert by_pair[("S1", "S2")] == "oper_state=up"   # branch edge
-    assert by_pair[("E1", "S1")] is None              # plain edge, not ""
+    # spec-05 §4: the first label is kept verbatim for the envelope's `label`.
+    assert s1.model_extra["label"] == "Step"
+    # spec-05 §4: the Output closing wording lands in ``reason`` (RETURN
+    # alias ``final_answer``).
+    o1 = next(n for n in tree.nodes if n.id == "O1")
+    assert o1.reason == "Link is fine."
+    # spec-05 §4: edges carry rel_type — Sequence (no condition) vs Branch.
+    by_pair = {(e.source, e.target): (e.rel_type, e.condition) for e in tree.edges}
+    assert by_pair[("S1", "S2")] == ("Branch", "oper_state=up")
+    assert by_pair[("E1", "S1")] == ("Sequence", None)  # plain edge, not ""
     assert tree.truncated is False
 
 

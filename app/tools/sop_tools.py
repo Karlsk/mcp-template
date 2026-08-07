@@ -13,7 +13,14 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from app.graph import GraphClient, GraphError, SOPCandidate, SOPTree
+from app.graph import (
+    GraphClient,
+    GraphError,
+    SOPCandidate,
+    SOPTree,
+    event_payload,
+    node_to_json,
+)
 from app.graph.cypher import MAX_SOP_CANDIDATES, MAX_SOP_DEPTH
 from app.tools.validation import (
     graph_skeleton_payload,
@@ -27,20 +34,20 @@ logger = logging.getLogger(__name__)
 def _tree_payload(tree: SOPTree | None, match: str) -> dict[str, object]:
     if tree is None:
         return {"ok": False, "configured": True,
-                "detail": "no SOP event matches the given db and event_id"}
+                "detail": "no SOP event matches the given db and event_name"}
     return {
         "ok": True,
         "configured": True,
         "mode": "tree",
         "match": match,
         "db": tree.db,
-        "event": tree.event.model_dump(),
-        "nodes": [n.model_dump() for n in tree.nodes],
+        # spec-05 §5 envelope: derived node type/label, name-based event root.
+        "event": event_payload(tree.event),
+        "nodes": [node_to_json(n) for n in tree.nodes],
         "edges": [e.model_dump() for e in tree.edges],
         "truncated": tree.truncated,
         "next_step_hint": (
-            "For each node with kind='step', call "
-            "search_command_template(action=<step.action>, vendor=<device vendor>)."
+            "Each Step's 'action' is the key for search_command_template."
         ),
     }
 
@@ -52,7 +59,7 @@ def _candidates_payload(candidates: list[SOPCandidate], match: str) -> dict[str,
         "mode": "candidates",
         "match": match,
         "candidates": [c.model_dump() for c in candidates],
-        "next_step_hint": "Re-call search_sop with both db and event_id of one candidate.",
+        "next_step_hint": "Re-call search_sop with both db and event_name of one candidate.",
     }
 
 
@@ -78,8 +85,10 @@ def register(mcp: FastMCP) -> None:
             "exact-first (name/alias/fault_type/intent), falling back to keyword "
             "substring. One hit returns the tree (mode='tree'); several hits return "
             "candidates (mode='candidates') — re-call with the candidate's db AND "
-            "event_id to expand one. Each step carries an 'action' key: feed it to "
-            "search_command_template to get the vendor-specific command. Returns "
+            "event_name to expand one. Tree nodes carry type 'function_call' "
+            "(Steps, with an 'action' key: feed it to search_command_template to "
+            "get the vendor-specific command) or 'final_answer' (conclusion in "
+            "'reason'). Returns "
             "{ok, configured, mode, match, db, event, nodes[], edges[], truncated}."
         ),
     )

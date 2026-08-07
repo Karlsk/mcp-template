@@ -229,13 +229,36 @@ async def test_single_hit_returns_the_tree_mode(make_session) -> None:
     assert payload["mode"] == "tree"
     assert payload["match"] == "exact"
     assert payload["db"] == "lib_a"
-    assert payload["event"]["id"] == "E1"
+    # spec-05 §5: the event root becomes the name-based locator payload.
+    assert payload["event"] == {
+        "event_name": "Link Down", "event_id": "E1", "fault_type": "", "intent": "",
+    }
     assert len(payload["nodes"]) == 3
     assert len(payload["edges"]) == 2
     assert payload["truncated"] is False
     assert "search_command_template" in payload["next_step_hint"]
-    # Deliberate redundancy: the event is also inside nodes.
-    assert any(n["kind"] == "event" for n in payload["nodes"])
+    # spec-05 §5 envelope: type/label are derived, empty strings omitted.
+    by_id = {n["id"]: n for n in payload["nodes"]}
+    assert by_id["S1"] == {
+        "id": "S1", "name": "Check interface", "type": "function_call",
+        "label": "Step", "action": "verify_interface_state",
+        "observation": "oper_state",
+    }
+    assert by_id["O1"] == {
+        "id": "O1", "name": "Close", "type": "final_answer",
+        "label": "Output", "reason": "Link is fine.",
+    }
+    # Deliberate redundancy: the event is also inside nodes (function_call,
+    # no action -> no optional keys).
+    assert by_id["E1"]["type"] == "function_call"
+    assert by_id["E1"]["label"] == "Event"
+    assert "action" not in by_id["E1"]
+    # spec-05 §5: edges echo rel_type; Sequence edges keep condition null.
+    by_pair = {(e["source"], e["target"]): e for e in payload["edges"]}
+    assert by_pair[("E1", "S1")]["rel_type"] == "Sequence"
+    assert by_pair[("E1", "S1")]["condition"] is None
+    assert by_pair[("S1", "O1")]["rel_type"] == "Branch"
+    assert by_pair[("S1", "O1")]["condition"] == "oper_state=down"
 
 
 async def test_multiple_hits_return_candidates_mode(make_session) -> None:
@@ -252,8 +275,9 @@ async def test_multiple_hits_return_candidates_mode(make_session) -> None:
     assert len(payload["candidates"]) == 2
     for candidate in payload["candidates"]:
         assert candidate["db"]
-        assert candidate["event_id"]
-    assert "db and event_id" in payload["next_step_hint"]
+        # spec-05 §5: locating goes through the name; event_id is only echoed.
+        assert candidate["event_name"] == "Link Down"
+    assert "db and event_name" in payload["next_step_hint"]
 
 
 async def test_zero_hits_is_ok_true_with_empty_mode(make_session) -> None:

@@ -11,7 +11,7 @@ from app.graph.cypher import (
     FIND_EVENTS_EXACT,
     FIND_EVENTS_FUZZY,
     MAX_SOP_NODES,
-    RESOLVE_EVENT_BY_ID,
+    RESOLVE_EVENT_BY_NAME,
     SOP_TREE_EDGES,
     sop_tree_nodes,
 )
@@ -20,8 +20,8 @@ from tests.conftest import FakeNeo4jDriver, make_graph_settings, make_sdn_settin
 
 CANDIDATE_ROW = {
     "db": "lib_a",
+    "event_name": "Link Down",
     "event_id": "E1",
-    "name": "Link Down",
     "fault_type": "link down",
     "intent": "",
 }
@@ -93,7 +93,10 @@ async def test_exact_hit_single_candidate_no_fuzzy_query() -> None:
     assert mode == "exact"
     assert len(candidates) == 1
     assert candidates[0].db == "lib_a"
-    assert candidates[0].event_id == "E1"
+    assert candidates[0].event_name == "Link Down"
+    # The internal id is echoed via extra="allow" (spec-05 §3.2 note).
+    assert candidates[0].model_extra is not None
+    assert candidates[0].model_extra["event_id"] == "E1"
     assert len(driver.calls) == 1
     assert driver.calls[0]["cypher"] == FIND_EVENTS_EXACT
     # Both sides normalize: client strips + lowers before the toLower() compare.
@@ -184,12 +187,12 @@ async def test_resolve_sop_event_is_cross_db_reverse_lookup() -> None:
     spy = RunReadSpy(graph)
     graph._neo4j.run_read = spy  # type: ignore[method-assign]
 
-    found = await graph.resolve_sop_event("E1")
+    found = await graph.resolve_sop_event("Link Down")
 
     assert len(found) == 1
-    assert found[0].event_id == "E1"
-    assert driver.calls[0]["cypher"] == RESOLVE_EVENT_BY_ID
-    assert driver.calls[0]["params"] == {"database": None, "event_id": "E1"}
+    assert found[0].event_name == "Link Down"
+    assert driver.calls[0]["cypher"] == RESOLVE_EVENT_BY_NAME
+    assert driver.calls[0]["params"] == {"database": None, "event_name": "link down"}
     assert spy.calls[0]["db_tag"] is None
     assert spy.calls[0]["allow_cross_db"] is True
 

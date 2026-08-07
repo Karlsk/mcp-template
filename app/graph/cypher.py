@@ -1,7 +1,9 @@
 """SOP graph labels, relationship types, and Cypher statement constants.
 
-Aligning with the real graph (should label naming differ) only touches this
-file — never the client logic. Statement bodies follow spec-03 §4.
+Aligning with the real graph only touches this file — never the client logic.
+Statement bodies follow spec-03 §4 as realigned by spec-05 §3 (real graph
+schema: ``Sequence``/``Branch`` relationships, capitalized ``Action`` /
+``Observation`` / ``FinalAnswer`` properties, ``database`` tenancy property).
 """
 
 from __future__ import annotations
@@ -11,8 +13,23 @@ from typing import Final
 LABEL_EVENT: Final = "Event"
 LABEL_STEP: Final = "Step"
 LABEL_OUTPUT: Final = "Output"
-REL_NEXT: Final = "NEXT"
-DB_PROPERTY: Final = "database"
+REL_NEXT: Final = "NEXT"  # legacy spec-03 relationship; tree queries only
+REL_SEQUENCE: Final = "Sequence"
+REL_BRANCH: Final = "Branch"
+DB_PROPERTY: Final = "database"    # real property name; nodes AND relationships
+
+PROP_ACTION: Final = "Action"
+PROP_OBSERVATION: Final = "Observation"
+PROP_FINAL_ANSWER: Final = "FinalAnswer"
+PROP_CONDITION: Final = "Condition"
+
+# Dual-case-compatible value expressions (Cypher fragments inlined into the
+# query templates; the node variable is hard-coded to ``n``). Real data mixes
+# upper- and lower-case property writes, and the coalesce chains here are the
+# ONE place both spellings are reconciled (spec-05 §3.1).
+ACTION_EXPR: Final = "coalesce(n.Action, n.action, '')"
+OBSERVATION_EXPR: Final = "coalesce(n.Observation, n.observation, '')"
+FINAL_ANSWER_EXPR: Final = "coalesce(n.FinalAnswer, n.final_answer, n.reason, '')"
 
 MAX_SOP_DEPTH: Final = 20      # variable-length traversal cap (cycle guard)
 MAX_SOP_NODES: Final = 200     # node budget per tree
@@ -26,14 +43,15 @@ FIND_EVENTS_EXACT = f"""
 MATCH (e:{LABEL_EVENT})
 WHERE ($database IS NULL OR e.{DB_PROPERTY} = $database)
   AND (
-    ($fault_type IS NOT NULL AND toLower(e.fault_type) = $fault_type)
-    OR ($intent IS NOT NULL AND toLower(e.intent) = $intent)
+    ($fault_type IS NOT NULL AND toLower(coalesce(e.fault_type, '')) = $fault_type)
+    OR ($intent IS NOT NULL AND toLower(coalesce(e.intent, '')) = $intent)
     OR ($needle IS NOT NULL AND toLower(e.name) = $needle)
     OR ($needle IS NOT NULL AND $needle IN [a IN coalesce(e.aliases, []) | toLower(a)])
   )
-RETURN e.{DB_PROPERTY} AS db, e.id AS event_id, e.name AS name,
+RETURN e.{DB_PROPERTY} AS db, e.name AS event_name,
+       coalesce(e.id, elementId(e)) AS event_id,
        coalesce(e.fault_type, '') AS fault_type, coalesce(e.intent, '') AS intent
-ORDER BY db, event_id
+ORDER BY db, event_name
 LIMIT $limit
 """
 
@@ -50,20 +68,24 @@ WHERE ($database IS NULL OR e.{DB_PROPERTY} = $database)
     OR toLower(coalesce(e.description, '')) CONTAINS $needle
     OR ANY(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS $needle)
   )
-RETURN e.{DB_PROPERTY} AS db, e.id AS event_id, e.name AS name,
+RETURN e.{DB_PROPERTY} AS db, e.name AS event_name,
+       coalesce(e.id, elementId(e)) AS event_id,
        coalesce(e.fault_type, '') AS fault_type, coalesce(e.intent, '') AS intent
-ORDER BY db, event_id
+ORDER BY db, event_name
 LIMIT $limit
 """
 
-# Reverse lookup by id across logical databases (spec-03 §5 resolve_sop_event).
-RESOLVE_EVENT_BY_ID = f"""
+# Reverse lookup by name across logical databases (spec-05 §3.2). Locating
+# always goes through the Event name — the real graph does not guarantee an
+# ``id`` property on Events; ``event_id`` is only echoed for references.
+RESOLVE_EVENT_BY_NAME = f"""
 MATCH (e:{LABEL_EVENT})
 WHERE ($database IS NULL OR e.{DB_PROPERTY} = $database)
-  AND e.id = $event_id
-RETURN e.{DB_PROPERTY} AS db, e.id AS event_id, e.name AS name,
+  AND toLower(e.name) = $event_name
+RETURN e.{DB_PROPERTY} AS db, e.name AS event_name,
+       coalesce(e.id, elementId(e)) AS event_id,
        coalesce(e.fault_type, '') AS fault_type, coalesce(e.intent, '') AS intent
-ORDER BY db, event_id
+ORDER BY db, event_name
 """
 
 

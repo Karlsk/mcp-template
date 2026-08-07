@@ -31,13 +31,17 @@ class SOPNode(BaseModel):
 
 
 class SOPCandidate(BaseModel):
-    """One matched Event. ``db`` + ``event_id`` together locate its tree."""
+    """One matched Event. ``db`` + ``event_name`` together locate its tree.
+
+    The internal ``event_id`` (``coalesce(e.id, elementId(e))``) is echoed for
+    cross-session references/debugging and survives via ``extra="allow"`` —
+    locating always goes through the name (spec-05 §3.2).
+    """
 
     model_config = ConfigDict(extra="allow")
 
     db: str = ""
-    event_id: str = ""
-    name: str = ""
+    event_name: str = ""
     fault_type: str = ""
     intent: str = ""
 

@@ -21,8 +21,8 @@ from tests.conftest import (
 
 CANDIDATE_ROW = {
     "db": "lib_a",
+    "event_name": "Link Down",
     "event_id": "E1",
-    "name": "Link Down",
     "fault_type": "link down",
     "intent": "",
 }
@@ -288,11 +288,11 @@ async def test_db_plus_event_id_expands_directly(make_session) -> None:
 
 
 async def test_event_id_without_db_reverse_looks_up(make_session) -> None:
-    """Ambiguous ids return candidates instead of guessing (spec-03 §6.2)."""
-    from app.graph.cypher import RESOLVE_EVENT_BY_ID
+    """Ambiguous names return candidates instead of guessing (spec-05 §3.2)."""
+    from app.graph.cypher import RESOLVE_EVENT_BY_NAME
 
     def handler(cypher: str, _params: dict[str, Any]) -> list[dict[str, Any]]:
-        if cypher == RESOLVE_EVENT_BY_ID:
+        if cypher == RESOLVE_EVENT_BY_NAME:
             return [CANDIDATE_ROW, dict(CANDIDATE_ROW, db="lib_b")]
         if cypher == SOP_TREE_EDGES:
             return TREE_EDGES

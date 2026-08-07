@@ -36,7 +36,7 @@ from app.graph.cypher import (
     LABEL_STEP,
     MAX_SOP_DEPTH,
     MAX_SOP_NODES,
-    RESOLVE_EVENT_BY_ID,
+    RESOLVE_EVENT_BY_NAME,
     SOP_TREE_EDGES,
     sop_tree_nodes,
 )
@@ -231,17 +231,18 @@ class GraphClient:
             mode = "none"
         return [SOPCandidate.model_validate(row) for row in rows], mode
 
-    async def resolve_sop_event(self, event_id: str) -> list[SOPCandidate]:
-        """Reverse-lookup an Event by id across logical databases.
+    async def resolve_sop_event(self, event_name: str) -> list[SOPCandidate]:
+        """Reverse-lookup an Event by name across logical databases.
 
-        Used when the caller supplies ``event_id`` without ``db``. Ids are not
-        guaranteed globally unique, so multiple hits are returned rather than guessed.
+        Used when the caller supplies an event name without ``db``. Names are
+        not guaranteed globally unique, so multiple hits are returned rather
+        than guessed (spec-05 §3.2: locating always goes through the name).
         """
         self._require_configured()
         rows = await self._run(
-            RESOLVE_EVENT_BY_ID,
+            RESOLVE_EVENT_BY_NAME,
             # Same ParameterMissing contract as the discovery stage.
-            {"database": None, "event_id": event_id},
+            {"database": None, "event_name": _normalize(event_name) or event_name},
             db_tag=None,
             allow_cross_db=True,
             query_name="resolve_sop_event",

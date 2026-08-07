@@ -144,7 +144,7 @@ def register(mcp: FastMCP) -> None:
                 only = candidates[0]
                 return _tree_payload(
                     await graph.get_sop_tree(
-                        db=only.db, event_id=only.event_id, max_depth=max_depth
+                        db=only.db, event_id=only.event_name, max_depth=max_depth
                     ),
                     match,
                 )

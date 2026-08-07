@@ -307,7 +307,7 @@ async def test_db_plus_event_id_expands_directly(make_session) -> None:
     payload = _payload(result)
     assert payload["ok"] is True
     assert payload["mode"] == "tree"
-    # No discovery query: (db, event_id) locates the tree directly.
+    # No discovery query: (db, event_name) locates the tree directly.
     assert all(c["cypher"] != FIND_EVENTS_EXACT for c in driver.calls)
 
 

@@ -50,11 +50,12 @@ sdn-mcp-template/
 │   ├── settings.py               # pydantic-settings：YAML(非敏感结构) + env/.env(secrets) 合并
 │   ├── common/
 │   │   ├── http.py               # 通用 HttpClient：retry / auth / REST 封装 + 请求/响应日志（与 SDN 无关）
-│   │   ├── neo4j.py              # 通用 Neo4jClient：_db 逻辑库守卫 / 托管事务读取 / 查询日志（与具体图库无关）
+│   │   ├── neo4j.py              # 通用 Neo4jClient：database 逻辑库守卫 / 托管事务读取 / 查询日志（与具体图库无关）
 │   │   └── logging.py            # 统一日志：JSON 结构化，setup_logging 由 MCP_LOG_LEVEL 驱动 app.* logger
 │   ├── graph/                    # SOP 图库集成层（Neo4j）
 │   │   ├── client.py             # GraphClient：probe / 骨架守卫 / _map_neo4j_error（唯一处理驱动异常处）
-│   │   ├── cypher.py             # 标签/关系/属性常量（LABEL_EVENT / REL_NEXT / DB_PROPERTY …）
+│   │   ├── cypher.py             # 标签/关系/属性常量（LABEL_EVENT / REL_SEQUENCE / DB_PROPERTY …）
+│   │   ├── envelope.py           # 信封纯函数：node_type / node_to_json / event_payload（无 IO）
 │   │   ├── models.py             # SOPEdge / GraphFragment（序列化中立，纯数据）
 │   │   └── exceptions.py         # GraphError 层级（安全 public_message）
 │   ├── sdn/                      # SDN 集成层
@@ -111,7 +112,7 @@ sdn-mcp-template/
 │   cypher.py        标签/关系常量   models.py（SOPEdge 等）     │
 ├─────────────────────────────────────────────────────────────┤
 │ app/common/http.py 通用 HttpClient：重试/超时/鉴权/方法封装     │
-│ app/common/neo4j.py 通用 Neo4jClient：_db 守卫/读取/查询日志   │
+│ app/common/neo4j.py 通用 Neo4jClient：database 守卫/读取/查询日志   │
 ├─────────────────────────────────────────────────────────────┤
 │ httpx → SDN controller        neo4j driver → Neo4j 图库      │
 └─────────────────────────────────────────────────────────────┘
@@ -259,9 +260,9 @@ MCP tool 函数 (app/tools/*.py)
 
 **配置与骨架模式**：非敏感结构（`database`/`query_timeout`/`max_transaction_retry_time`/`log_params`）在 YAML `neo4j:` 块；连接三件套走 env——`NEO4J_URI`（优先于 YAML `neo4j.uri`）、`NEO4J_USERNAME`、`NEO4J_PASSWORD`（`SecretStr`，`neo4j_username`/`neo4j_password` 键出现在 YAML 会被启动时拒绝）。`NEO4J_URI` 空 = 骨架模式（`configured is False`）。lifespan 启动时 `probe()` 探测但**不 fail-fast**（与 SDN basic 登录不同）：图库宕机只记 WARNING `graph_probe_failed`，SDN 工具不受影响；关闭顺序先 graph 后 sdn。
 
-**`_db` 逻辑库守卫（核心约定）**：同一物理 Neo4j 里用节点属性 `_db` 区分多个逻辑库（常量 `graph.cypher.DB_PROPERTY`）。逻辑库是**数据不是配置**——`Neo4jSettings` 故意没有 `db_tag` 字段，`db_tag` 每次 query 调用现填：
+**`database` 逻辑库守卫（核心约定）**：同一物理 Neo4j 里用 `database` 属性区分多个逻辑库（常量 `graph.cypher.DB_PROPERTY`），**节点与关系上都带**（真实图库契约）。逻辑库是**数据不是配置**——`Neo4jSettings` 故意没有 `db_tag` 字段，`db_tag` 每次 query 调用现填：
 
-- `run_read(cypher, params, *, db_tag, ...)` 的 `db_tag` 关键字**必填无默认值**；非 None 时注入 `params["_db"]`（覆盖调用方预置值）并要求 Cypher 文本含 `$_db` 过滤；
+- `run_read(cypher, params, *, db_tag, ...)` 的 `db_tag` 关键字**必填无默认值**；非 None 时注入 `params["database"]`（覆盖调用方预置值）并要求 Cypher 文本含 `$database` 过滤；
 - `db_tag=None` 必须显式 `allow_cross_db=True`（跨库是审计点，不得隐式发生）；
 - 违反守卫抛 `ValueError`——这是开发期编程错误，不映射为 `GraphError`。
 
@@ -275,27 +276,27 @@ MCP tool 函数 (app/tools/*.py)
 
 **日志**：事件与 `http.py` 对齐——`neo4j_query`/`neo4j_result`（DEBUG）、`neo4j_error`（WARNING），`extra` 含 `query_name`/`db_tag`/`record_count`/`elapsed_ms`/`error_type`。密码永不落日志；`params` 仅 `neo4j.log_params: true` 且 DEBUG 时输出；Cypher 全文不作默认日志字段（`query_name` 短名定位够用）。
 
-**SOP schema（spec-03）**：
+**SOP schema（spec-05 真实图库契约，取代 spec-03 的推断 schema）**：
 
 | 节点 label | 关键属性 |
 |---|---|
-| `Event` | `id` / `name` / `fault_type` / `intent` |
-| `Step` | `id` / `name` / `action` / `observation` |
-| `Output` | `id` / `name` / `answer` |
+| `Event` | `name`（定位锚点）/ `aliases` / `fault_type` / `intent`（后两者可能存在不保证，Cypher 用 coalesce 访问） |
+| `Step` | `name` / `Action` / `Observation`（首字母大写，取值双写兼容 `Action/action`） |
+| `Output` | `FinalAnswer`（首字母大写，`IS NOT NULL` 判定终结；`final_answer`/`reason` 兜底） |
 
-边为 `NEXT {condition}`：分支边带 `condition` 字符串，直连边不带（工具信封里是 null 不是 `""`）。所有节点带 `_db`。瘦类型：models 全部 `extra="allow"`，`kind` 由 labels 推导（Event/Step/Output 小写，未知 label 保留原样小写）。
+边为 `Sequence`（直连）/ `Branch`（分支，带 `Condition` 属性；直连边无，工具信封里是 null 不是 `""`）。节点与关系都带 `database`。瘦类型：models 全部 `extra="allow"`，`kind` 由 labels 推导（Event/Step/Output 小写，未知 label 保留原样小写）。
 
 **两阶段 db 语义（search_sop 的核心）**：
 
-- 发现阶段：`find_sop_events`/`resolve_sop_event` 是全仓库唯一跨库点——`db_tag=None + allow_cross_db=True`，且 params 必须显式预置 `"_db": None`（缺失会让真库报 `ParameterMissing`）；调用方给了 `db` 则收窄到该逻辑库（`db_tag=db`，不跨库）；
-- 展树阶段：`get_sop_tree` 用 `db_tag=db`，变长路径以 `ALL(n IN nodes(path) WHERE n._db = $_db)` 锁整个逻辑库（含中间节点）；`(db, event_id)` 才唯一定位一棵树，跨库同名 id 绝不并树。
+- 发现阶段：`find_sop_events`/`resolve_sop_event` 是全仓库唯一跨库点——`db_tag=None + allow_cross_db=True`，且 params 必须显式预置 `"database": None`（缺失会让真库报 `ParameterMissing`）；调用方给了 `db` 则收窄到该逻辑库（`db_tag=db`，不跨库）；
+- 展树阶段：`get_sop_tree` 用 `db_tag=db`，变长路径同时以 `ALL(n IN nodes(path) WHERE n.database = $database)` 与 `ALL(r IN relationships(path) WHERE r.database = $database)` 锁库（含中间节点与关系）；`(db, event_name)` 才唯一定位一棵树，跨库同名 Event 绝不并树。
 
 **两条陷阱**：
 
-- 变长路径锁逻辑库必须写 `ALL(n IN nodes(path) ...)`——只过滤端点挡不住跨库脏边，中间节点不过滤会把对面的树拖进来；
+- 变长路径锁逻辑库必须同时写 `ALL(n IN nodes(path) ...)` 与 `ALL(r IN relationships(path) ...)`——只过滤端点挡不住跨库脏边，中间节点/关系不过滤会把对面的树拖进来；
 - 变长上界（`*1..N`）不可参数化——Cypher 不支持在变长里放参数，`sop_tree_nodes(max_depth)` 是唯一内联点，前置三重防护：工具层 `positive_bound_detail` 范围校验 → client `int()` + 钳位 `[1, MAX_SOP_DEPTH]` → 只拼一个整数。
 
-**信封语义**：零命中是 `ok: True, mode: "empty"`（查询成功、结果为空），不是 `ok: False`（调用失败）；图库未配置走 `graph_skeleton_payload()`（`GRAPH_SKELETON_DETAIL`，与 SDN 版 `SKELETON_DETAIL` 文案分开）。
+**信封语义**：零命中是 `ok: True, mode: "empty"`（查询成功、结果为空），不是 `ok: False`（调用失败）；图库未配置走 `graph_skeleton_payload()`（`GRAPH_SKELETON_DETAIL`，与 SDN 版 `SKELETON_DETAIL` 文案分开）。tree 信封为 JSON 形状（spec-05 §5）：节点 `{id, name, type, label, action?, observation?, reason?}`（`type` = `function_call`/`final_answer`），边 `{source, target, rel_type: "Sequence"|"Branch", condition: str|null}`；Mermaid 渲染不在工具范围内（交由 agent/前端）。
 
 ## 9. 命令模板库（YAML）
 
@@ -344,7 +345,7 @@ MCP tool 函数 (app/tools/*.py)
 
 > v1.5 已落地的业务方法：`query_devices`/`query_links`/`query_switch_history`/`query_vpn_history`/`query_te_history`/`get_topology`/`query_operation_logs`/`run_command`，均追加在 `SDNClient` 类尾、走 `self.request`。告警走**新方法 `query_alert_page`**（§3.5 多条件契约）+ 新工具 `sdn_device_alerts`（`alert_tools.py`），**旧 `query_alerts`/`sdn_alerts` 保留作框架桩不动**。`run_command`（`cmd_tools.py::sdn_run_command`）对设备下发 CLI 命令，**默认只读**（仅诊断类命令；`allow_write=True` 覆盖）——只读策略属工具层输入校验，client 为透传。
 
-> **GraphClient 侧已落地方法（spec-03，与上面 SDN v1.5 清单分开）**：`find_sop_events`（发现：精确/模糊两段）/`resolve_sop_event`（跨库按 event_id 反查）/`get_sop_tree`（展树：锁定逻辑库），均追加在类尾、走私有 `_run` 薄封装（驱动异常唯一映射点）。
+> **GraphClient 侧已落地方法（spec-03/05，与上面 SDN v1.5 清单分开）**：`find_sop_events`（发现：精确/模糊两段）/`resolve_sop_event`（跨库按 Event 名反查）/`get_sop_tree`（展树：锁定逻辑库），均追加在类尾、走私有 `_run` 薄封装（驱动异常唯一映射点）。
 
 > **占位工具约定（spec-01）**：数据源未接入的工具先钉注册面——按最终签名注册，函数体只做参数校验并返回 `validation.not_implemented_payload(hint)`（`{ok: false, configured: false, detail: "Tool is registered but not implemented yet."}`，`hint` 点名待接入数据源）；占位阶段不加 `ctx` 与两层 except（无 IO、避免不可达分支）。落实现时只替换函数体并按 §5 补两层兜底，**参数名不得再改**。
 
@@ -376,7 +377,7 @@ uv run mypy
 - **MCP 集成**：`create_connected_server_and_client_session(mcp)` 内存传输起会话，`conftest.py::make_session` 工厂把 mock transport 与 `build_server(sdn_client_factory=...)` 缝在一起。
 - **环境隔离**：`conftest.py` 的 autouse fixture 关闭 dotenv 并清除 `SDN_CONTROLLER_*` / `NEO4J_*` 环境变量，保证 Settings 确定性；需要时用 `monkeypatch.setenv`。
 - 测试构造 Settings 的惯例：`make_sdn_settings()`（`retry max_retries=0`、`timeout=1.0`，跑得快且可预测）；图库侧用 `make_graph_settings()` + conftest 的 fake Neo4j driver（记录 cypher/params/database 调用）。
-- **Neo4j mock**：fake `AsyncDriver`/`AsyncSession`/`AsyncManagedTransaction` 经 `GraphClient(settings, driver=...)` 注入——`_db` 守卫、错误映射、生命周期全程无需真实图库。
+- **Neo4j mock**：fake `AsyncDriver`/`AsyncSession`/`AsyncManagedTransaction` 经 `GraphClient(settings, driver=...)` 注入——`database` 守卫、错误映射、生命周期全程无需真实图库。
 - live 验证（手动，需真实控制器）：`PYTHONPATH=. uv run python scripts/test_sdn_live.py`。该脚本逐步跑全部 v1.5 业务方法、逐步容错并汇总 PASS/FAIL，兼作**瘦类型 schema 探针**——发现字段差异回填 `app/sdn/models.py`。
 
 ## 12. 运行与部署

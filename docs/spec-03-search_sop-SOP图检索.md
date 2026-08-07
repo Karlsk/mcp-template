@@ -1,5 +1,10 @@
 # Spec 03：`search_sop` —— SOP 图受控检索
 
+> ⚠️ 本 spec 的 schema / Cypher / models / 工具信封章节已被
+> **spec-05（`docs/spec-05-search_sop-真实图库对齐改造.md`）** 取代（真实图库 schema
+> 与本文推断不符）。分层、错误映射、守卫机制、骨架模式等其余章节仍有效；
+> 两份冲突处一律以 spec-05 为准。
+
 > 状态：待实施
 > 依据：`AGENTS.md`（= `CLAUDE.md`）§5 调用规范、spec-02（`GraphClient` 与 `_db` 调用约定）
 > 范围：SOP 图 schema 契约、`app/graph/models.py` 模型、`GraphClient` 三个业务方法、`app/tools/sop_tools.py::search_sop`

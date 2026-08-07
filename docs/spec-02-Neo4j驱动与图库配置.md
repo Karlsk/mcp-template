@@ -1,5 +1,9 @@
 # Spec 02：Neo4j 驱动与图库配置
 
+> ⚠️ 真实图库的逻辑库属性名是 `database`（节点与关系上都带），不是本文的 `_db`：
+> 守卫参数键相应为 `params["database"]` / Cypher 断言 `$database` / 跨库预置
+> `{"database": None}`。其余机制不变；详见 **spec-05 §2**。
+
 > 状态：待实施
 > 依据：`AGENTS.md`（= `CLAUDE.md`）§4 分层架构、§6 HttpClient 规范（作镜像参照）、§8.2 接入新类型数据源
 > 范围：`neo4j` 依赖、`app/common/neo4j.py` 通用驱动、`app/graph/` 集成层骨架、settings/YAML 配置、lifespan 接线、networkx 必要性判断

@@ -1,5 +1,9 @@
 # Multi-stage build: install deps with uv, run on a slim Python image.
 # Build context is the repo root (see deploy/docker-compose.yml).
+#
+# Variant of deploy/Dockerfile with --frozen: installs EXACTLY what uv.lock
+# pins (no re-resolution). Prefer this for reproducible/CI builds; use the
+# default Dockerfile when the lock may need re-resolving on restricted nets.
 
 # ---- Builder: resolve & install dependencies with uv ----
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
@@ -11,13 +15,12 @@ ENV UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 
 # Install third-party dependencies first (cached unless pyproject/lock change).
-# CN mirrors (aliyun primary, tuna fallback) for restricted networks; no
-# --frozen here on purpose — see deploy/Dockerfile.frozen for the locked build.
+# CN mirrors (aliyun primary, tuna fallback) for restricted networks.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --no-dev --no-install-project --index-url https://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
+RUN uv sync --frozen --no-dev --no-install-project --index-url https://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # Install the project itself (app package).
 COPY app ./app
-RUN uv sync --no-dev --index-url https://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
+RUN uv sync --frozen --no-dev --index-url https://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # ---- Runtime: slim image with only the venv + config ----
 FROM python:3.13-slim-bookworm AS runtime
 

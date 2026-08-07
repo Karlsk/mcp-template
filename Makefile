@@ -6,14 +6,17 @@
 ENV_FILE := $(wildcard .env)
 COMPOSE := docker compose -f deploy/docker-compose.yml $(if $(ENV_FILE),--env-file .env)
 
-.PHONY: help docker-build docker-up docker-stop docker-restart docker-ps docker-logs
+.PHONY: help docker-build docker-build-frozen docker-up docker-stop docker-restart docker-ps docker-logs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN { FS = ":.*?## " } { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }'
 
-docker-build: ## Build the sdn-mcp image
+docker-build: ## Build the sdn-mcp image (deploy/Dockerfile, mirrors, no --frozen)
 	$(COMPOSE) build
+
+docker-build-frozen: ## Build the image with --frozen (deploy/Dockerfile.frozen, locked deps)
+	docker build -f deploy/Dockerfile.frozen -t sdn-mcp:latest .
 
 docker-up: ## Build (if needed) and start the container in the background
 	$(COMPOSE) up -d --build

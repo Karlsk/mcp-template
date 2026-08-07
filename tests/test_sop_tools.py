@@ -30,17 +30,17 @@ TREE_NODES = [
     {
         "id": "E1", "labels": ["Event"], "name": "Link Down",
         "action": "", "observation": "", "answer": "",
-        "props": {"id": "E1", "name": "Link Down", "_db": "lib_a"},
+        "props": {"id": "E1", "name": "Link Down", "database": "lib_a"},
     },
     {
         "id": "S1", "labels": ["Step"], "name": "Check interface",
         "action": "verify_interface_state", "observation": "oper_state",
-        "answer": "", "props": {"id": "S1", "name": "Check interface", "_db": "lib_a"},
+        "answer": "", "props": {"id": "S1", "name": "Check interface", "database": "lib_a"},
     },
     {
         "id": "O1", "labels": ["Output"], "name": "Close",
         "action": "", "observation": "", "answer": "Link is fine.",
-        "props": {"id": "O1", "name": "Close", "_db": "lib_a"},
+        "props": {"id": "O1", "name": "Close", "database": "lib_a"},
     },
 ]
 TREE_EDGES = [

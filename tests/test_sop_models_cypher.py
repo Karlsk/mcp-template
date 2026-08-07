@@ -17,25 +17,25 @@ def test_find_events_exact_matches_all_four_keys() -> None:
     stmt = cypher.FIND_EVENTS_EXACT
     assert ":Event" in stmt
     # Cross-db-safe db guard: parameter exists (as null) on the cross-db path.
-    assert "$_db IS NULL OR e._db = $_db" in stmt
+    assert "$database IS NULL OR e.database = $database" in stmt
     assert "toLower(e.fault_type) = $fault_type" in stmt
     assert "toLower(e.intent) = $intent" in stmt
     assert "toLower(e.name) = $needle" in stmt
     # aliases participate in exact matching.
     assert "coalesce(e.aliases, [])" in stmt
     # Every candidate echoes its own logical database.
-    assert "e._db AS db" in stmt
+    assert "e.database AS db" in stmt
     assert "LIMIT $limit" in stmt
 
 
 def test_find_events_fuzzy_is_substring_fallback() -> None:
     stmt = cypher.FIND_EVENTS_FUZZY
-    assert "$_db IS NULL OR e._db = $_db" in stmt
+    assert "$database IS NULL OR e.database = $database" in stmt
     assert "$needle IS NOT NULL" in stmt
     for field in ("e.name", "e.fault_type", "e.intent", "e.description"):
         assert f"toLower(coalesce({field}, '')) CONTAINS $needle" in stmt
     assert "ANY(a IN coalesce(e.aliases, [])" in stmt
-    assert "e._db AS db" in stmt
+    assert "e.database AS db" in stmt
 
 
 def test_sop_tree_nodes_inlines_validated_depth() -> None:
@@ -44,8 +44,8 @@ def test_sop_tree_nodes_inlines_validated_depth() -> None:
     stmt = cypher.sop_tree_nodes(5)
     assert "*1..5" in stmt
     # The single most error-prone line: intermediate nodes must share the db.
-    assert "ALL(n IN nodes(path) WHERE n._db = $_db)" in stmt
-    assert "e._db = $_db AND e.id = $event_id" in stmt
+    assert "ALL(n IN nodes(path) WHERE n.database = $database)" in stmt
+    assert "e.database = $database AND e.id = $event_id" in stmt
     # Single-node SOPs must still come back (no outgoing edges).
     assert "OPTIONAL MATCH" in stmt
     # labels feed ``kind``; properties preserve schema evolution.
@@ -57,7 +57,7 @@ def test_sop_tree_nodes_inlines_validated_depth() -> None:
 
 def test_sop_tree_edges_locks_both_endpoints() -> None:
     stmt = cypher.SOP_TREE_EDGES
-    assert "a._db = $_db AND b._db = $_db" in stmt
+    assert "a.database = $database AND b.database = $database" in stmt
     assert "a.id IN $node_ids AND b.id IN $node_ids" in stmt
     # Missing condition property comes back as null -> ``condition is None``.
     assert "r.condition AS condition" in stmt
@@ -66,9 +66,9 @@ def test_sop_tree_edges_locks_both_endpoints() -> None:
 def test_resolve_event_by_id_is_cross_db_safe() -> None:
     stmt = cypher.RESOLVE_EVENT_BY_ID
     assert ":Event" in stmt
-    assert "$_db IS NULL OR e._db = $_db" in stmt
+    assert "$database IS NULL OR e.database = $database" in stmt
     assert "e.id = $event_id" in stmt
-    assert "e._db AS db" in stmt
+    assert "e.database AS db" in stmt
 
 
 def test_sop_node_defaults_and_extra_allow() -> None:

@@ -13,7 +13,7 @@ import pytest
 
 from app.common.neo4j import Neo4jClient, Neo4jClientConfig
 
-SCOPED_CYPHER = "MATCH (n) WHERE n._db = $_db RETURN n"
+SCOPED_CYPHER = "MATCH (n) WHERE n.database = $database RETURN n"
 UNSCOPED_CYPHER = "MATCH (n) RETURN n"
 
 
@@ -102,14 +102,14 @@ def make_client(driver: FakeDriver) -> Neo4jClient:
 
 
 # ---------------------------------------------------------------------------
-# _db logical-database guard (the core contract)
+# database logical-database guard (the core contract)
 # ---------------------------------------------------------------------------
 
 
 async def test_run_read_rejects_scoped_tag_without_db_filter() -> None:
     driver = FakeDriver()
     client = make_client(driver)
-    with pytest.raises(ValueError, match=r"must filter on \$_db"):
+    with pytest.raises(ValueError, match=r"must filter on \$database"):
         await client.run_read(UNSCOPED_CYPHER, db_tag="sop")
     assert driver.calls == []  # never reached the driver
 
@@ -119,7 +119,7 @@ async def test_run_read_injects_db_tag_param() -> None:
     client = make_client(driver)
     rows = await client.run_read(SCOPED_CYPHER, db_tag="sop")
     assert rows == [{"name": "e1"}]
-    assert driver.calls[0]["params"]["_db"] == "sop"
+    assert driver.calls[0]["params"]["database"] == "sop"
 
 
 async def test_run_read_requires_explicit_cross_db() -> None:
@@ -132,26 +132,45 @@ async def test_run_read_cross_db_does_not_inject_db() -> None:
     driver = FakeDriver(records=[])
     client = make_client(driver)
     await client.run_read(UNSCOPED_CYPHER, db_tag=None, allow_cross_db=True)
-    assert "_db" not in driver.calls[0]["params"]
+    assert "database" not in driver.calls[0]["params"]
 
 
 async def test_run_read_cross_db_keeps_explicit_none_db() -> None:
-    """Discovery-phase call form: params['_db'] is None and must pass through."""
+    """Discovery-phase call form: params['database'] is None and must pass through."""
     driver = FakeDriver(records=[])
     client = make_client(driver)
     await client.run_read(
-        SCOPED_CYPHER, {"_db": None}, db_tag=None, allow_cross_db=True
+        SCOPED_CYPHER, {"database": None}, db_tag=None, allow_cross_db=True
     )
     params = driver.calls[0]["params"]
-    assert "_db" in params
-    assert params["_db"] is None
+    assert "database" in params
+    assert params["database"] is None
 
 
 async def test_run_read_db_tag_overrides_caller_params() -> None:
     driver = FakeDriver(records=[])
     client = make_client(driver)
-    await client.run_read(SCOPED_CYPHER, {"_db": "other"}, db_tag="sop")
-    assert driver.calls[0]["params"]["_db"] == "sop"
+    await client.run_read(SCOPED_CYPHER, {"database": "other"}, db_tag="sop")
+    assert driver.calls[0]["params"]["database"] == "sop"
+
+
+async def test_run_read_legacy_db_param_is_just_a_plain_param() -> None:
+    """Regression (spec-05 §2): the old `_db` key is no longer special-cased.
+
+    A leftover `{"_db": ...}` preset must neither satisfy the guard nor be
+    overwritten — it travels downstream as an ordinary parameter.
+    """
+    driver = FakeDriver(records=[])
+    client = make_client(driver)
+    with pytest.raises(ValueError, match=r"must filter on \$database"):
+        await client.run_read(UNSCOPED_CYPHER, {"_db": "sop"}, db_tag="sop")
+    rows_driver = FakeDriver(records=[])
+    await make_client(rows_driver).run_read(
+        SCOPED_CYPHER, {"_db": "legacy"}, db_tag="sop"
+    )
+    params = rows_driver.calls[0]["params"]
+    assert params["_db"] == "legacy"  # untouched, not overwritten
+    assert params["database"] == "sop"  # the scope still comes from db_tag
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +264,7 @@ async def test_run_read_logs_params_when_enabled(caplog: pytest.LogCaptureFixtur
     with caplog.at_level(logging.DEBUG, logger="app.common.neo4j"):
         await client.run_read(SCOPED_CYPHER, {"needle": "R1"}, db_tag="sop")
     query_records = [r for r in caplog.records if r.message == "neo4j_query"]
-    assert query_records[0].params == {"needle": "R1", "_db": "sop"}
+    assert query_records[0].params == {"needle": "R1", "database": "sop"}
 
 
 async def test_run_read_logs_error(caplog: pytest.LogCaptureFixture) -> None:

@@ -12,19 +12,19 @@ LABEL_EVENT: Final = "Event"
 LABEL_STEP: Final = "Step"
 LABEL_OUTPUT: Final = "Output"
 REL_NEXT: Final = "NEXT"
-DB_PROPERTY: Final = "_db"
+DB_PROPERTY: Final = "database"
 
 MAX_SOP_DEPTH: Final = 20      # variable-length traversal cap (cycle guard)
 MAX_SOP_NODES: Final = 200     # node budget per tree
 MAX_SOP_CANDIDATES: Final = 50 # upper bound for the `limit` tool parameter
 
 # -- Discovery stage (spec-03 §4.1) ------------------------------------------
-# ``($_db IS NULL OR ...)``: callers MUST pass an explicit ``{"_db": None}``
-# on the cross-db path — Cypher referencing a parameter that was never sent is
-# rejected by Neo4j (ParameterMissing).
+# ``($database IS NULL OR ...)``: callers MUST pass an explicit
+# ``{"database": None}`` on the cross-db path — Cypher referencing a parameter
+# that was never sent is rejected by Neo4j (ParameterMissing).
 FIND_EVENTS_EXACT = f"""
 MATCH (e:{LABEL_EVENT})
-WHERE ($_db IS NULL OR e.{DB_PROPERTY} = $_db)
+WHERE ($database IS NULL OR e.{DB_PROPERTY} = $database)
   AND (
     ($fault_type IS NOT NULL AND toLower(e.fault_type) = $fault_type)
     OR ($intent IS NOT NULL AND toLower(e.intent) = $intent)
@@ -41,7 +41,7 @@ LIMIT $limit
 # nothing — the two semantics ("is it" vs "might be it") stay separate.
 FIND_EVENTS_FUZZY = f"""
 MATCH (e:{LABEL_EVENT})
-WHERE ($_db IS NULL OR e.{DB_PROPERTY} = $_db)
+WHERE ($database IS NULL OR e.{DB_PROPERTY} = $database)
   AND $needle IS NOT NULL
   AND (
     toLower(coalesce(e.name, '')) CONTAINS $needle
@@ -59,7 +59,7 @@ LIMIT $limit
 # Reverse lookup by id across logical databases (spec-03 §5 resolve_sop_event).
 RESOLVE_EVENT_BY_ID = f"""
 MATCH (e:{LABEL_EVENT})
-WHERE ($_db IS NULL OR e.{DB_PROPERTY} = $_db)
+WHERE ($database IS NULL OR e.{DB_PROPERTY} = $database)
   AND e.id = $event_id
 RETURN e.{DB_PROPERTY} AS db, e.id AS event_id, e.name AS name,
        coalesce(e.fault_type, '') AS fault_type, coalesce(e.intent, '') AS intent
@@ -83,9 +83,9 @@ def sop_tree_nodes(max_depth: int) -> str:
     """
     return f"""
 MATCH (e:{LABEL_EVENT})
-WHERE e.{DB_PROPERTY} = $_db AND e.id = $event_id
+WHERE e.{DB_PROPERTY} = $database AND e.id = $event_id
 OPTIONAL MATCH path = (e)-[:{REL_NEXT}*1..{max_depth}]->(m)
-WHERE ALL(n IN nodes(path) WHERE n.{DB_PROPERTY} = $_db)
+WHERE ALL(n IN nodes(path) WHERE n.{DB_PROPERTY} = $database)
 WITH e, collect(DISTINCT m) AS reached
 UNWIND ([e] + reached) AS n
 WITH DISTINCT n WHERE n IS NOT NULL
@@ -99,11 +99,11 @@ LIMIT $node_limit
 
 
 # Second tree step: edges within the settled node set. Both endpoints carry a
-# ``_db`` filter; a missing ``condition`` property returns null, which the
+# ``database`` filter; a missing ``condition`` property returns null, which the
 # model's ``condition: str | None`` reads as "unconditional edge".
 SOP_TREE_EDGES = f"""
 MATCH (a)-[r:{REL_NEXT}]->(b)
-WHERE a.{DB_PROPERTY} = $_db AND b.{DB_PROPERTY} = $_db
+WHERE a.{DB_PROPERTY} = $database AND b.{DB_PROPERTY} = $database
   AND a.id IN $node_ids AND b.id IN $node_ids
 RETURN a.id AS source, b.id AS target, r.condition AS condition
 ORDER BY source, target

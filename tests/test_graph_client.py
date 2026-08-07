@@ -163,7 +163,7 @@ def test_cypher_constants() -> None:
     assert LABEL_STEP == "Step"
     assert LABEL_OUTPUT == "Output"
     assert REL_NEXT == "NEXT"
-    assert DB_PROPERTY == "_db"
+    assert DB_PROPERTY == "database"
 
 
 def test_graph_fragment_is_serialization_neutral() -> None:

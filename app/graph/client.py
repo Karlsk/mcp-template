@@ -205,10 +205,11 @@ class GraphClient:
         self._require_configured()
         needle = _normalize(keyword) or _normalize(fault_type) or _normalize(intent)
         params: dict[str, Any] = {
-            # Cypher references $_db even on the cross-db path, so the parameter
-            # must exist (as null) or Neo4j raises ParameterMissing. When ``db``
-            # narrows the search, run_read overwrites this preset with the tag.
-            "_db": None,
+            # Cypher references $database even on the cross-db path, so the
+            # parameter must exist (as null) or Neo4j raises ParameterMissing.
+            # When ``db`` narrows the search, run_read overwrites this preset
+            # with the tag.
+            "database": None,
             "fault_type": _normalize(fault_type),
             "intent": _normalize(intent),
             "needle": needle,
@@ -240,7 +241,7 @@ class GraphClient:
         rows = await self._run(
             RESOLVE_EVENT_BY_ID,
             # Same ParameterMissing contract as the discovery stage.
-            {"_db": None, "event_id": event_id},
+            {"database": None, "event_id": event_id},
             db_tag=None,
             allow_cross_db=True,
             query_name="resolve_sop_event",
@@ -253,7 +254,7 @@ class GraphClient:
         """Fetch one complete SOP tree, scoped to a single logical database.
 
         Returns None when no Event matches ``(db, event_id)``. Traversal is confined
-        to ``db``: every node on every path must carry the same ``_db``.
+        to ``db``: every node on every path must carry the same ``database``.
         """
         self._require_configured()
         depth = max(1, min(int(max_depth), MAX_SOP_DEPTH))

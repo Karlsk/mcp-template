@@ -9,9 +9,10 @@ Design notes:
   ``max_transaction_retry_time``. Unlike ``HttpClient`` there is no hand-rolled
   backoff loop here; re-implementing one would fight the driver.
 - Logical multi-database: the community edition has a single physical database,
-  so tenancy is a node property (``_db``). ``run_read`` requires the caller to
-  pass ``db_tag`` on EVERY call and asserts the query filters on ``$_db``;
-  crossing logical databases requires an explicit ``allow_cross_db=True``.
+  so tenancy is a node property (``database``). ``run_read`` requires the
+  caller to pass ``db_tag`` on EVERY call and asserts the query filters on
+  ``$database``; crossing logical databases requires an explicit
+  ``allow_cross_db=True``.
 - Accepts an injectable ``driver`` so query construction and error mapping can be
   unit-tested without a real server (mirrors ``HttpClientConfig.transport``).
 
@@ -32,7 +33,7 @@ from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncManagedTransaction
 
 logger = logging.getLogger(__name__)
 
-_DB_PARAM: Final[str] = "$_db"
+_DB_PARAM: Final[str] = "$database"
 
 
 def _check_db_scope(cypher: str, db_tag: str | None, allow_cross_db: bool) -> None:
@@ -122,15 +123,17 @@ class Neo4jClient:
         """Run a read-only query inside a managed (driver-retried) transaction.
 
         ``db_tag`` scopes the query to one logical database: it is injected as
-        the ``_db`` parameter and the cypher must filter on ``$_db``. Passing
-        ``db_tag=None`` requires ``allow_cross_db=True`` (explicit cross-db).
+        the ``database`` parameter and the cypher must filter on ``$database``.
+        Passing ``db_tag=None`` requires ``allow_cross_db=True`` (explicit
+        cross-db).
         """
         _check_db_scope(cypher, db_tag, allow_cross_db)
         merged = dict(params or {})
         if db_tag is not None:
-            # db_tag wins over any caller-supplied `_db`: the scope is decided
-            # by the explicit argument, never by a leftover value in `params`.
-            merged["_db"] = db_tag
+            # db_tag wins over any caller-supplied `database`: the scope is
+            # decided by the explicit argument, never by a leftover value in
+            # `params`.
+            merged["database"] = db_tag
         query_extra: dict[str, object] = {
             "query_name": query_name,
             "db_tag": db_tag,

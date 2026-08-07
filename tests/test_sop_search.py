@@ -42,7 +42,7 @@ def node_row(
         "action": extra.pop("action", ""),
         "observation": extra.pop("observation", ""),
         "answer": extra.pop("answer", ""),
-        "props": {"id": node_id, "name": name, "_db": db, **extra},
+        "props": {"id": node_id, "name": name, "database": db, **extra},
     }
 
 
@@ -148,8 +148,8 @@ async def test_needle_prefers_keyword_and_is_normalized() -> None:
 
 
 async def test_discovery_is_cross_db_with_explicit_null_db_param() -> None:
-    """Spec §7.8a: db_tag=None + allow_cross_db=True + params['_db'] is None
-    (present, not absent — a real Neo4j would raise ParameterMissing)."""
+    """Spec §7.8a: db_tag=None + allow_cross_db=True + params['database'] is
+    None (present, not absent — a real Neo4j would raise ParameterMissing)."""
     driver = FakeNeo4jDriver(records=[CANDIDATE_ROW])
     graph = GraphClient(make_settings(), driver=driver)
     spy = RunReadSpy(graph)
@@ -159,8 +159,8 @@ async def test_discovery_is_cross_db_with_explicit_null_db_param() -> None:
 
     assert spy.calls[0]["db_tag"] is None
     assert spy.calls[0]["allow_cross_db"] is True
-    assert "_db" in driver.calls[0]["params"]
-    assert driver.calls[0]["params"]["_db"] is None
+    assert "database" in driver.calls[0]["params"]
+    assert driver.calls[0]["params"]["database"] is None
 
 
 async def test_discovery_narrowed_to_one_db_is_not_cross_db() -> None:
@@ -175,7 +175,7 @@ async def test_discovery_narrowed_to_one_db_is_not_cross_db() -> None:
     assert spy.calls[0]["db_tag"] == "lib_a"
     assert spy.calls[0]["allow_cross_db"] is False
     # run_read overwrites the preset None with the db_tag.
-    assert driver.calls[0]["params"]["_db"] == "lib_a"
+    assert driver.calls[0]["params"]["database"] == "lib_a"
 
 
 async def test_resolve_sop_event_is_cross_db_reverse_lookup() -> None:
@@ -189,7 +189,7 @@ async def test_resolve_sop_event_is_cross_db_reverse_lookup() -> None:
     assert len(found) == 1
     assert found[0].event_id == "E1"
     assert driver.calls[0]["cypher"] == RESOLVE_EVENT_BY_ID
-    assert driver.calls[0]["params"] == {"_db": None, "event_id": "E1"}
+    assert driver.calls[0]["params"] == {"database": None, "event_id": "E1"}
     assert spy.calls[0]["db_tag"] is None
     assert spy.calls[0]["allow_cross_db"] is True
 
@@ -237,7 +237,7 @@ async def test_tree_shapes_nodes_kinds_and_edge_conditions() -> None:
     assert s1.observation == "oper_state"
     # props are merged via extra="allow" (schema evolution preserved).
     assert s1.model_extra is not None
-    assert s1.model_extra["_db"] == "lib_a"
+    assert s1.model_extra["database"] == "lib_a"
     by_pair = {(e.source, e.target): e.condition for e in tree.edges}
     assert by_pair[("S1", "S2")] == "oper_state=up"   # branch edge
     assert by_pair[("E1", "S1")] is None              # plain edge, not ""
@@ -255,7 +255,7 @@ async def test_tree_expansion_locks_the_logical_db() -> None:
 
     assert [c["db_tag"] for c in spy.calls] == ["lib_a", "lib_a"]
     assert all(c["allow_cross_db"] is False for c in spy.calls)
-    assert [c["params"]["_db"] for c in driver.calls] == ["lib_a", "lib_a"]
+    assert [c["params"]["database"] for c in driver.calls] == ["lib_a", "lib_a"]
 
 
 async def test_tree_truncation_when_nodes_exceed_budget() -> None:
@@ -319,7 +319,7 @@ async def test_cross_db_same_id_does_not_merge_trees() -> None:
     """Spec §7.9: lib_a and lib_b both own E1 — trees stay disjoint."""
 
     def handler(cypher: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        db = params["_db"]
+        db = params["database"]
         if cypher == SOP_TREE_EDGES:
             return [{"source": "E1", "target": f"{db}-S1", "condition": None}]
         return [
@@ -340,9 +340,9 @@ async def test_cross_db_same_id_does_not_merge_trees() -> None:
     assert "lib_a-S1" in ids_a and "lib_a-S1" not in ids_b
     assert "lib_b-S1" in ids_b and "lib_b-S1" not in ids_a
     assert tree_a.event.model_extra is not None
-    assert tree_a.event.model_extra["_db"] == "lib_a"
+    assert tree_a.event.model_extra["database"] == "lib_a"
     assert tree_b.event.model_extra is not None
-    assert tree_b.event.model_extra["_db"] == "lib_b"
+    assert tree_b.event.model_extra["database"] == "lib_b"
 
 
 async def test_max_depth_is_inlined_into_the_nodes_query() -> None:

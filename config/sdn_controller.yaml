@@ -28,6 +28,7 @@ sdn:
     bgp_nbr: "/api/no/config/device-conf/bgp-nbr"                  # BGP peer info, GET with device_name/peer_ip query (get_bgp_nbr)
     isis_nbr: "/api/sr/config/network-topology:network-topology/topology/isisNbr"  # ISIS peer of one interface, POST device_name/interface_name (get_isis_nbr)
     interface_name: "/api/no/config/device-conf/interface-name"   # ifIndex -> interface name, GET device_name/interface_idx (get_interface_name)
+    ping: "/restconf/operations/oper-rpc:ping"                      # RESTCONF ping probe, POST input{pe-name,dest-address,...} (ping)
   # auth_type=basic only: JSON key holding the bearer token in the login response.
   token_field: "access_token"
   # Opt-in request/response body logging for SDN troubleshooting (DEBUG level,

@@ -337,3 +337,26 @@ class IsisNbrResponse(BaseModel):
 
     device_name: str | None = None
     interface_name: str | None = None
+
+
+class PingOutput(BaseModel):
+    """Inner output of a RESTCONF ping probe.
+
+    ``ping_result`` carries the raw device ping text (line endings preserved
+    verbatim). Unknown fields ride extras.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    ping_result: str | None = Field(None, alias="ping-result")
+
+
+class PingResponse(BaseModel):
+    """Ping probe (POST /restconf/operations/oper-rpc:ping).
+
+    RESTCONF envelope: the controller wraps the result in an ``output`` object.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    output: PingOutput

@@ -52,6 +52,7 @@ from app.sdn.models import (
     OperationLogsResponse,
     PageResponse,
     PerfHistoryResponse,
+    PingResponse,
     SDNAlertsResponse,
     SDNHealthResponse,
     TopologyResponse,
@@ -702,6 +703,40 @@ class SDNClient:
             return IsisNbrResponse.model_validate(resp.json())
         except (ValueError, ValidationError) as exc:
             raise SDNError("SDN isis-nbr response was malformed.", detail=str(exc)) from exc
+
+    async def ping(
+        self,
+        pe_name: str,
+        dest_address: str,
+        address_family: str = "ipv4",
+        source_address: str | None = None,
+        vrf_name: str | None = None,
+    ) -> PingResponse:
+        """Ping a destination address from a device (POST oper-rpc:ping).
+
+        RESTCONF probe: the request body is wrapped in an ``input`` object and
+        the controller answers with ``{"output": {"ping-result": ...}}``.
+        ``source_address`` and ``vrf_name`` are optional and dropped when None.
+        """
+        endpoint = self._settings.sdn.endpoints.get(
+            "ping", "/restconf/operations/oper-rpc:ping"
+        )
+        body = {
+            "input": _drop_none(
+                {
+                    "pe-name": pe_name,
+                    "dest-address": dest_address,
+                    "address-family": address_family,
+                    "source-address": source_address,
+                    "vrf-name": vrf_name,
+                }
+            )
+        }
+        resp = await self.request("POST", endpoint, json=body)
+        try:
+            return PingResponse.model_validate(resp.json())
+        except (ValueError, ValidationError) as exc:
+            raise SDNError("SDN ping response was malformed.", detail=str(exc)) from exc
 
     async def aclose(self) -> None:
         """Release the underlying HTTP clients. Idempotent."""

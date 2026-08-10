@@ -377,6 +377,7 @@ def test_time_window_detail_branches() -> None:
         ("sdn_operation_logs", {}),
         ("sdn_device_alerts", {}),
         ("sdn_interface_name", {"device_name": "X", "interface_idx": 1}),
+        ("sdn_ping", {"pe_name": "X", "dest_address": "10.0.0.1"}),
     ],
 )
 async def test_v15_tool_skeleton_mode(tool: str, args: dict[str, Any]) -> None:
@@ -409,6 +410,7 @@ async def test_list_tools_includes_v15_tools() -> None:
         "sdn_operation_logs",
         "sdn_device_alerts",
         "sdn_interface_name",
+        "sdn_ping",
     } <= names
 
 
@@ -599,6 +601,7 @@ async def test_sdn_device_alerts_bad_auto_recovery_rejected() -> None:
         ("sdn_operation_logs", {}),
         ("sdn_device_alerts", {}),
         ("sdn_interface_name", {"device_name": "X", "interface_idx": 1}),
+        ("sdn_ping", {"pe_name": "X", "dest_address": "10.0.0.1"}),
     ],
 )
 async def test_v15_tool_auth_error_is_sanitized(tool: str, args: dict[str, Any]) -> None:
@@ -627,6 +630,7 @@ async def test_v15_tool_auth_error_is_sanitized(tool: str, args: dict[str, Any])
         ("sdn_operation_logs", {}),
         ("sdn_device_alerts", {}),
         ("sdn_interface_name", {"device_name": "X", "interface_idx": 1}),
+        ("sdn_ping", {"pe_name": "X", "dest_address": "10.0.0.1"}),
     ],
 )
 async def test_v15_tool_unexpected_error_does_not_leak(
@@ -1020,6 +1024,115 @@ async def test_sdn_interface_name_auth_error_is_sanitized() -> None:
         await session.initialize()
         result = await session.call_tool(
             "sdn_interface_name", {"device_name": "X", "interface_idx": 1}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "https://sdn.example" not in json.dumps(payload)
+    assert "secret" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# sdn_ping tool (POST restconf/operations/oper-rpc:ping)
+# ---------------------------------------------------------------------------
+
+_PING_BODY = {"output": {"ping-result": "5 packet(s) transmitted, 5 received"}}
+
+
+@pytest.mark.parametrize(
+    ("args",),
+    [
+        ({"pe_name": "", "dest_address": "10.0.0.1"},),
+        ({"pe_name": "NJ-SCT-R01", "dest_address": "  "},),
+    ],
+)
+async def test_sdn_ping_empty_inputs_rejected(args: dict[str, Any]) -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_PING_BODY))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_ping", args)
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "must not be empty" in payload["detail"]
+
+
+async def test_sdn_ping_success_envelope() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = str(request.url.path)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_PING_BODY)
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_ping",
+            {
+                "pe_name": "NJ-SCT-R01",
+                "dest_address": "192.168.169.2",
+                "source_address": "192.168.169.1",
+                "vrf_name": "vpn1",
+            },
+        )
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["configured"] is True
+    assert payload["ping_result"] == "5 packet(s) transmitted, 5 received"
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/restconf/operations/oper-rpc:ping"
+    assert seen["body"] == {
+        "input": {
+            "pe-name": "NJ-SCT-R01",
+            "dest-address": "192.168.169.2",
+            "address-family": "ipv4",
+            "source-address": "192.168.169.1",
+            "vrf-name": "vpn1",
+        }
+    }
+
+
+async def test_sdn_ping_optional_params_dropped() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_PING_BODY)
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        await session.call_tool(
+            "sdn_ping", {"pe_name": "NJ-SCT-R01", "dest_address": "10.0.0.1"}
+        )
+    inner = seen["body"]["input"]
+    assert "source-address" not in inner
+    assert "vrf-name" not in inner
+    assert inner["address-family"] == "ipv4"
+
+
+async def test_sdn_ping_skeleton_mode() -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_ping", {"pe_name": "X", "dest_address": "10.0.0.1"}
+        )
+    assert _payload(result) == {
+        "ok": False,
+        "configured": False,
+        "detail": "SDN controller not configured (skeleton mode).",
+    }
+
+
+async def test_sdn_ping_auth_error_is_sanitized() -> None:
+    server = _v15_server(lambda _r: httpx.Response(401))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_ping", {"pe_name": "X", "dest_address": "10.0.0.1"}
         )
     payload = _payload(result)
     assert payload["ok"] is False

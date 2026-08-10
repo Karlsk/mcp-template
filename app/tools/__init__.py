@@ -22,6 +22,7 @@ def register_all(mcp: FastMCP) -> None:
         link_tools,
         log_tools,
         perf_tools,
+        ping_tools,
         sdn_tools,
         sop_tools,
         system,
@@ -40,6 +41,7 @@ def register_all(mcp: FastMCP) -> None:
     cmd_tools.register(mcp)
     bgp_tools.register(mcp)
     isis_tools.register(mcp)
+    ping_tools.register(mcp)
     sop_tools.register(mcp)
     template_tools.register(mcp)
     graph_tools.register(mcp)

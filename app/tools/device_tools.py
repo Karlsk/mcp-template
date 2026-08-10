@@ -88,3 +88,45 @@ def register(mcp: FastMCP) -> None:
         except Exception:
             logger.exception("sdn_device_by_management_ip unexpected failure")
             return unexpected_payload()
+
+    @mcp.tool(
+        name="sdn_interface_name",
+        description=(
+            "Resolve an SNMP ifIndex to the interface name on a given device "
+            "(GET device-conf/interface-name). Returns {ok, configured, "
+            "interface_name} on hit, or {ok: false, detail} when the ifIndex "
+            "does not exist on the device."
+        ),
+    )
+    async def sdn_interface_name(
+        ctx: Context[Any, Any, Any],
+        device_name: str,
+        interface_idx: int,
+    ) -> dict[str, object]:
+        device_name = device_name.strip()
+        if not device_name:
+            return {"ok": False, "detail": "device_name must not be empty"}
+        if interface_idx < 0:
+            return {"ok": False, "detail": "interface_idx must be >= 0"}
+        try:
+            sdn: SDNClient = ctx.request_context.lifespan_context["sdn_client"]
+            if not sdn.configured:
+                return skeleton_payload()
+            result = await sdn.get_interface_name(device_name, interface_idx)
+            if result.result:
+                return {
+                    "ok": True,
+                    "configured": True,
+                    "interface_name": result.result,
+                }
+            return {
+                "ok": False,
+                "configured": True,
+                "detail": "ifIndex not found on device",
+            }
+        except SDNError as exc:
+            await ctx.error(f"sdn_interface_name failed: {exc}")
+            return {"ok": False, "configured": True, "detail": str(exc)}
+        except Exception:
+            logger.exception("sdn_interface_name unexpected failure")
+            return unexpected_payload()

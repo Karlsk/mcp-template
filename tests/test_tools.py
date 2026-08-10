@@ -376,6 +376,7 @@ def test_time_window_detail_branches() -> None:
         ("sdn_te_tunnel_traffic", {"device_name": "X", "tunnel_name": "T"}),
         ("sdn_operation_logs", {}),
         ("sdn_device_alerts", {}),
+        ("sdn_interface_name", {"device_name": "X", "interface_idx": 1}),
     ],
 )
 async def test_v15_tool_skeleton_mode(tool: str, args: dict[str, Any]) -> None:
@@ -407,6 +408,7 @@ async def test_list_tools_includes_v15_tools() -> None:
         "sdn_te_tunnel_traffic",
         "sdn_operation_logs",
         "sdn_device_alerts",
+        "sdn_interface_name",
     } <= names
 
 
@@ -596,6 +598,7 @@ async def test_sdn_device_alerts_bad_auto_recovery_rejected() -> None:
         ("sdn_te_tunnel_traffic", {"device_name": "X", "tunnel_name": "T"}),
         ("sdn_operation_logs", {}),
         ("sdn_device_alerts", {}),
+        ("sdn_interface_name", {"device_name": "X", "interface_idx": 1}),
     ],
 )
 async def test_v15_tool_auth_error_is_sanitized(tool: str, args: dict[str, Any]) -> None:
@@ -623,6 +626,7 @@ async def test_v15_tool_auth_error_is_sanitized(tool: str, args: dict[str, Any])
         ("sdn_te_tunnel_traffic", {"device_name": "X", "tunnel_name": "T"}),
         ("sdn_operation_logs", {}),
         ("sdn_device_alerts", {}),
+        ("sdn_interface_name", {"device_name": "X", "interface_idx": 1}),
     ],
 )
 async def test_v15_tool_unexpected_error_does_not_leak(
@@ -927,6 +931,95 @@ async def test_sdn_isis_nbr_auth_error_is_sanitized() -> None:
         result = await session.call_tool(
             "sdn_isis_nbr",
             {"device_name": "X", "interface_name": "GigabitEthernet0/4/9"},
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "https://sdn.example" not in json.dumps(payload)
+    assert "secret" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# sdn_interface_name tool (GET device-conf/interface-name)
+# ---------------------------------------------------------------------------
+
+_INTERFACE_NAME_BODY = {"result": "Ten-GigabitEthernet3/2/20"}
+
+
+@pytest.mark.parametrize(
+    ("args",),
+    [
+        ({"device_name": "", "interface_idx": 644},),
+        ({"device_name": "  ", "interface_idx": 1},),
+    ],
+)
+async def test_sdn_interface_name_empty_inputs_rejected(args: dict[str, Any]) -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json=_INTERFACE_NAME_BODY))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool("sdn_interface_name", args)
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert "device_name" in payload["detail"]
+
+
+async def test_sdn_interface_name_success() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = str(request.url.path)
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json=_INTERFACE_NAME_BODY)
+
+    server = _v15_server(handler)
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_interface_name", {"device_name": "NJ-SCT-R03", "interface_idx": 644}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is True
+    assert payload["configured"] is True
+    assert payload["interface_name"] == "Ten-GigabitEthernet3/2/20"
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/api/no/config/device-conf/interface-name"
+    assert seen["params"] == {"device_name": "NJ-SCT-R03", "interface_idx": "644"}
+
+
+async def test_sdn_interface_name_not_found() -> None:
+    server = _v15_server(lambda _r: httpx.Response(200, json={}))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_interface_name", {"device_name": "NJ-SCT-R03", "interface_idx": 1}
+        )
+    payload = _payload(result)
+    assert payload["ok"] is False
+    assert payload["configured"] is True
+    assert "not found" in payload["detail"]
+
+
+async def test_sdn_interface_name_skeleton_mode() -> None:
+    mcp = _unconfigured_server()
+    async with create_connected_server_and_client_session(mcp) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_interface_name", {"device_name": "X", "interface_idx": 1}
+        )
+    assert _payload(result) == {
+        "ok": False,
+        "configured": False,
+        "detail": "SDN controller not configured (skeleton mode).",
+    }
+
+
+async def test_sdn_interface_name_auth_error_is_sanitized() -> None:
+    server = _v15_server(lambda _r: httpx.Response(401))
+    async with create_connected_server_and_client_session(server) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "sdn_interface_name", {"device_name": "X", "interface_idx": 1}
         )
     payload = _payload(result)
     assert payload["ok"] is False

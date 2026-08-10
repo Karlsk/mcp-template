@@ -26,7 +26,7 @@ def test_seed_actions_are_snake_case_and_default_covered() -> None:
         data = yaml.safe_load(fh)
 
     templates = data["templates"]
-    assert len(templates) == 9  # spec-04 §2: the first seed batch
+    assert len(templates) == 12  # spec-04 §2: seed batch + interface/bgp/isis config
 
     for action, entry in templates.items():
         assert ACTION_NAME_RE.match(action), f"action '{action}' not snake-case"

@@ -119,7 +119,7 @@ async def main() -> int:
     user = os.getenv("NEO4J_USERNAME", "neo4j")
     password = os.getenv("NEO4J_PASSWORD", "dms123!!")
 
-    print(f"=== Neo4j Driver Live Test ===")
+    print("=== Neo4j Driver Live Test ===")
     print(f"  uri={uri}  user={user}")
 
     ok1 = await test_raw_driver(uri, user, password)
@@ -127,7 +127,7 @@ async def main() -> int:
     ok3 = await test_graph_client(uri, user, password)
     await test_latency(uri, user, password)
 
-    print(f"\n=== Summary ===")
+    print("\n=== Summary ===")
     print(f"  raw driver:     {'PASS' if ok1 else 'FAIL'}")
     print(f"  Neo4jClient:    {'PASS' if ok2 else 'FAIL'}")
     print(f"  GraphClient:    {'PASS' if ok3 else 'FAIL'}")

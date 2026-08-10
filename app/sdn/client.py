@@ -46,6 +46,7 @@ from app.sdn.models import (
     BgpNbrResponse,
     CommandResultResponse,
     Device,
+    InterfaceNameResponse,
     IsisNbrResponse,
     LinkInfo,
     OperationLogsResponse,
@@ -658,6 +659,29 @@ class SDNClient:
             return BgpNbrResponse.model_validate(resp.json())
         except (ValueError, ValidationError) as exc:
             raise SDNError("SDN bgp-nbr response was malformed.", detail=str(exc)) from exc
+
+    async def get_interface_name(
+        self, device_name: str, interface_idx: int
+    ) -> InterfaceNameResponse:
+        """Interface name from ifIndex (GET device-conf/interface-name).
+
+        The controller returns ``{"result": "Ten-GigabitEthernet..."}`` when the
+        ifIndex exists, or ``{}`` (empty) when it does not.
+        """
+        endpoint = self._settings.sdn.endpoints.get(
+            "interface_name", "/api/no/config/device-conf/interface-name"
+        )
+        resp = await self.request(
+            "GET",
+            endpoint,
+            params={"device_name": device_name, "interface_idx": str(interface_idx)},
+        )
+        try:
+            return InterfaceNameResponse.model_validate(resp.json())
+        except (ValueError, ValidationError) as exc:
+            raise SDNError(
+                "SDN interface-name response was malformed.", detail=str(exc)
+            ) from exc
 
     async def get_isis_nbr(self, device_name: str, interface_name: str) -> IsisNbrResponse:
         """ISIS peer on one local interface (POST topology/isisNbr).

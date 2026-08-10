@@ -314,6 +314,18 @@ class BgpNbrResponse(BaseModel):
     peer_device: list[BgpNbrPeerDevice] = Field(default_factory=list)
 
 
+class InterfaceNameResponse(BaseModel):
+    """Interface name lookup (GET device-conf/interface-name).
+
+    Controller returns ``{"result": "Ten-GigabitEthernet..."}`` on hit,
+    or ``{}`` (empty) when the ifIndex does not exist on the device.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    result: str | None = None
+
+
 class IsisNbrResponse(BaseModel):
     """ISIS peer info (POST topology/isisNbr).
 

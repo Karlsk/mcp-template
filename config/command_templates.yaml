@@ -24,6 +24,15 @@ templates:
       h3c:     { command: "display counters inbound interface {interface}" }
       cisco:   { command: "show interface {interface} counters errors" }
       default: { command: "show interface {interface}" }
+  
+  get_interface_config:
+    name: 获取接口配置
+    observation: interface_config
+    vendors:
+      huawei:  { command: "display current-configuration interface {interface}" }
+      h3c:     { command: "display current-configuration interface {interface}" }
+      cisco:   { command: "show running-config interface {interface}" }
+      default: { command: "show interface {interface}" }
 
   check_optical_power:
     name: 检查光模块收发光功率
@@ -42,6 +51,15 @@ templates:
       h3c:     { command: "display bgp peer ipv4 {neighbor_ip} verbose" }
       cisco:   { command: "show bgp ipv4 unicast neighbors {neighbor_ip}" }
       default: { command: "show bgp neighbor {neighbor_ip}" }
+  
+  get_bgp_config:
+    name: 获取 BGP 配置
+    observation: bgp_config
+    vendors:
+      huawei:  { command: "display current-configuration configuration bgp" }
+      h3c:     { command: "display current-configuration configuration bgp" }
+      cisco:   { command: "show running-config | section bgp" }
+      default: { command: "show bgp config" }
 
   check_isis_neighbor:
     name: 检查 ISIS 邻居状态
@@ -51,6 +69,15 @@ templates:
       h3c:     { command: "display isis peer verbose" }
       cisco:   { command: "show isis neighbors detail" }
       default: { command: "show isis neighbor" }
+
+  get_isis_config:
+    name: 获取 ISIS 配置
+    observation: isis_config
+    vendors:
+      huawei:  { command: "display current-configuration configuration isis" }
+      h3c:     { command: "display current-configuration configuration isis" }
+      cisco:   { command: "show running-config | section isis" }
+      default: { command: "show isis config" }
 
   check_route:
     name: 检查路由表项

@@ -10,6 +10,7 @@
 
 - 基于官方 `mcp` Python SDK 的 **v1 `FastMCP` API**（当前锁定 `mcp==1.28.1`；上游 `main` 的 v2 预发布 API 不兼容，升级前必须核对 API 变更）。
 - 主传输为 **Streamable HTTP**（端点 `/mcp`），同时支持 **stdio**（便于 Claude Desktop 等本地客户端联调）。
+- **client 生命周期为进程级**：SDNClient/GraphClient 是进程级共享单例（`_SharedClients` holder，asyncio.Lock 保护），由进程级入口 `_run_process` 统一构造、`initialize()`/`probe()` 与关闭；会话 lifespan 只做只读引用注入（yield `sdn_client`/`graph_client`，键名不变），不构造也不关闭 client。
 - 仓库交付的是**骨架**：MCP server、通用 HTTP 客户端、SDN 对接层（结构完整、端点打桩）、配置管理、测试套件与 Docker 部署。接入真实控制器时遵循「models → client → tools」三处改动规范（见 §10）。
 - **骨架模式**：`base_url` 留空时 server 照常启动，SDN 工具返回 `{ok: false, configured: false}`。
 
@@ -46,7 +47,7 @@ make docker-up          # Docker 构建并启动（见 deploy/）
 ```
 sdn-mcp-template/
 ├── app/                          # 主包
-│   ├── server.py                 # FastMCP 工厂 + per-session lifespan + CLI 入口 (main)
+│   ├── server.py                 # FastMCP 工厂 + 进程级共享 client holder + 会话 lifespan 只读注入 + CLI 入口 (main)
 │   ├── settings.py               # pydantic-settings：YAML(非敏感结构) + env/.env(secrets) 合并
 │   ├── common/
 │   │   ├── http.py               # 通用 HttpClient：retry / auth / REST 封装 + 请求/响应日志（与 SDN 无关）
@@ -100,7 +101,7 @@ sdn-mcp-template/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ app/server.py      FastMCP 工厂 / lifespan / CLI             │
+│ app/server.py      FastMCP 工厂 / 进程级 lifespan / CLI       │
 │ app/settings.py    Settings（YAML + env 合并，SecretStr）     │
 ├─────────────────────────────────────────────────────────────┤
 │ app/tools/         MCP 工具：薄适配器，无业务逻辑              │
@@ -158,7 +159,7 @@ MCP tool 函数 (app/tools/*.py)
 - 错误处理**必须两层兜底**（见 `app/tools/system.py` 头部注释）：
   1. `except SDNError as exc:` → `await ctx.error(...)` 记日志 + 返回 `str(exc)`（SDNError 的 `__str__` 只含安全 message）；
   2. `except Exception:` → `logger.exception(...)` + 返回通用 `"Unexpected server error."`。**绝不能让原始异常进入 MCP 错误路径**。
-- 通过 lifespan 上下文拿 client：`sdn: SDNClient = ctx.request_context.lifespan_context["sdn_client"]`（lifespan 由 `server.py::_make_lifespan` 提供，每会话一个实例，退出时 `aclose()`）。
+- 通过 lifespan 上下文拿 client：`sdn: SDNClient = ctx.request_context.lifespan_context["sdn_client"]`（键名不变）。client 是**进程级共享单例**：所有权属于进程级入口 `_run_process`（serve 之前一次性 `initialize()`/`probe()`，finally 先 graph 后 sdn 关闭）；会话 lifespan（`server.py::_make_lifespan`）只做**只读引用注入**，不构造、不 initialize、不关闭 client。**lifespan 内不得直调 `initialize()`——initialize 非幂等，进程级 holder（`_SharedClients`，asyncio.Lock 保护）保证只执行一次。**
 - 未配置时短路：`if not sdn.configured: return {"ok": False, "configured": False, ...}`。
 - 新工具按域拆成独立模块（`device_tools`/`link_tools`/`topology_tools`/`perf_tools`/`log_tools`/`alert_tools`），各自 `register(mcp)`，共享校验走 `validation.py`（`page_bounds_detail`/`time_window_detail`/`skeleton_payload`/`unexpected_payload`）。`sdn_tools.py` 仅保留旧 `sdn_alerts` 桩，不再往里加新工具。
 - **分页**：工具层统一 1-based `page_num`/`page_size`（上限 `validation.MAX_PAGE_SIZE=100`），client 按端点换算（链路 `page=page_num-1`；设备 `pageNumber`/告警 `pageNum`/日志 `pageNum` 直通）。Spring 信封 `number` 为 0-based，原样回显（无行内注释，语义见本节+测试）。
@@ -222,12 +223,12 @@ MCP tool 函数 (app/tools/*.py)
 |---|---|---|---|
 | `no-auth` | — | — | 直接报错 |
 | `bearer` | `SDN_CONTROLLER_TOKEN`（静态 api-key） | 构造时 | 直接报错（不刷新） |
-| `basic` | 登录端点换取 bearer | 启动 `initialize()`，**失败即启动失败**（fail-fast） | 自动重新登录并**只重试一次** |
+| `basic` | 登录端点换取 bearer | **进程启动期** `_run_process` 一次性 `initialize()`（非每会话），**失败即进程非零退出**（fail-fast，容器 restart 策略兜底） | 自动重新登录并**只重试一次** |
 
 ### basic 模式端到端流程
 
-1. **双客户端结构**：构造时创建 `_http`（数据请求，bearer，初始 token 为空）+ `_login_http`（登录专用，**no-auth**）。登录请求不带 bearer、不走 `_send` 刷新逻辑 → **结构上不可能递归**（登录 401 不会触发刷新流程）。
-2. **启动登录**：MCP lifespan 调用 `initialize()` → `_refresh_token(stale_gen=0)` 强制首次登录。默认登录契约：向 `endpoints['login']` **POST** JSON `{username, password, device_id}`（`device_id` 为进程级 UUID；凭证走 body 不走 header），从响应 JSON 的 `token_field`（默认 `access_token`）取 token。
+1. **双客户端结构**：构造时创建 `_http`（数据请求，bearer，初始 token 为空），登录专用客户端由构造器参数 `login_transport: httpx.AsyncBaseTransport | None` 注入（None = 不需要登录客户端），client 内部据此构建登录专用 `HttpClient`（**no-auth**）。登录请求不带 bearer、不走 `_send` 刷新逻辑 → **结构上不可能递归**（登录 401 不会触发刷新流程）。
+2. **启动登录**：进程启动期 `_run_process`（serve 之前）调用 `initialize()` → `_refresh_token(stale_gen=0)` 强制首次登录（进程级一次性，非每会话；失败即进程非零退出，由容器 restart 策略兜底）。默认登录契约：向 `endpoints['login']` **POST** JSON `{username, password, device_id}`（`device_id` 为进程级 UUID；凭证走 body 不走 header），从响应 JSON 的 `token_field`（默认 `access_token`）取 token。
 3. **运行期刷新**（`_send`）：数据请求捕获 `HTTPStatusError` 且 `status_code == 401` →
    - `_refresh_token(stale_gen)` 刷新 → 原请求**重试一次**；
    - 第二次再 401 / 任何失败**直接上抛** → **永不死循环**。
@@ -259,7 +260,7 @@ MCP tool 函数 (app/tools/*.py)
 
 与 HTTP 栈完全同构的分层：`app/common/neo4j.py` 通用驱动（integration-agnostic）+ `app/graph/` 集成层（`client.py`/`cypher.py`/`models.py`/`exceptions.py`）。
 
-**配置与骨架模式**：非敏感结构（`database`/`query_timeout`/`max_transaction_retry_time`/`log_params`）在 YAML `neo4j:` 块；连接三件套走 env——`NEO4J_URI`（优先于 YAML `neo4j.uri`）、`NEO4J_USERNAME`、`NEO4J_PASSWORD`（`SecretStr`，`neo4j_username`/`neo4j_password` 键出现在 YAML 会被启动时拒绝）。`NEO4J_URI` 空 = 骨架模式（`configured is False`）。lifespan 启动时 `probe()` 探测但**不 fail-fast**（与 SDN basic 登录不同）：图库宕机只记 WARNING `graph_probe_failed`，SDN 工具不受影响；关闭顺序先 graph 后 sdn。
+**配置与骨架模式**：非敏感结构（`database`/`query_timeout`/`max_transaction_retry_time`/`log_params`）在 YAML `neo4j:` 块；连接三件套走 env——`NEO4J_URI`（优先于 YAML `neo4j.uri`）、`NEO4J_USERNAME`、`NEO4J_PASSWORD`（`SecretStr`，`neo4j_username`/`neo4j_password` 键出现在 YAML 会被启动时拒绝）。`NEO4J_URI` 空 = 骨架模式（`configured is False`）。进程启动期 `_run_process` 执行 `probe()` 探测但**不 fail-fast**（与 SDN basic 登录不同）：图库宕机只记 WARNING `graph_probe_failed`，SDN 工具不受影响；关闭顺序先 graph 后 sdn。
 
 **`database` 逻辑库守卫（核心约定）**：同一物理 Neo4j 里用 `database` 属性区分多个逻辑库（常量 `graph.cypher.DB_PROPERTY`），**节点与关系上都带**（真实图库契约）。逻辑库是**数据不是配置**——`Neo4jSettings` 故意没有 `db_tag` 字段，`db_tag` 每次 query 调用现填：
 
@@ -269,7 +270,7 @@ MCP tool 函数 (app/tools/*.py)
 
 **重试交给驱动**：读取走 `session.execute_read` 托管事务，驱动按 `max_transaction_retry_time` 内建重试；**不自实现重试/退避**（对照 HTTP 栈的 `RetryConfig`）。
 
-**生命周期**：与 SDNClient 一致——每会话一个 `GraphClient`（自持 driver），lifespan `finally` 关闭（`aclose()` 幂等）。将来若会话 churn 变高，只需把 `server.py` 的 factory 改成进程级单例 driver。
+**生命周期**：与 SDNClient 一致——进程级共享单例（`_SharedClients` holder，asyncio.Lock 保护），由进程级入口 `_run_process` 构造与 `probe()`，finally 先 graph 后 sdn 关闭（`aclose()` 幂等）；`app/common/neo4j.py` 的 driver 懒建由 asyncio.Lock 双检锁保护，进程级共享并发安全。会话 lifespan 只做引用注入，不构造/关闭。
 
 **networkx 结论：现阶段不引入**（spec-02 §11）。当前需求只是"从一个 Event 取有界子图"，Cypher 变长路径一次查询即可；实例化 networkx 等于建第二份真相（缓存过期 → agent 拿到被人工编辑过的旧流程，是正确性风险）。留门：`GraphFragment` 为序列化中立的节点集+边集，将来确需算法时新增 `app/graph/nx.py::to_digraph(fragment)` 即可，`client.py`/`tools/` 不动。
 
@@ -309,7 +310,7 @@ MCP tool 函数 (app/tools/*.py)
 
 **fail-fast**：`load()` 五条校验（文件缺失 / 非 mapping 或缺 `templates` / action 缺 vendors / command 为空 / vendor 别名归一后冲突），均抛 `TemplateError`（单层消息，**不含绝对路径**——路径只进日志）；`main()` 在 `setup_logging` 后预热一次，坏库**启动即阻断**（与 SDN basic 登录同理，不同于图库 probe 不阻断）。模板库是部署产物，改模板需重启，不提供热重载（保证"某次排障用的哪版命令"可追溯）。
 
-**为何不进 lifespan**：它是进程级只读纯数据，无连接、无 secret、无需清理；SDNClient/GraphClient 进 lifespan 是因为有连接生命周期与凭据。`template_tools.py` 直接 import `app/templates`——它就是这个数据源的集成层，不违反"tools 不得直碰传输库（httpx/neo4j）"规则。
+**为何不进 lifespan**：它是进程级只读纯数据，无连接、无 secret、无需清理；SDNClient/GraphClient 由进程级入口 `_run_process` 持有，是因为有连接生命周期与凭据。`template_tools.py` 直接 import `app/templates`——它就是这个数据源的集成层，不违反"tools 不得直碰传输库（httpx/neo4j）"规则。
 
 ## 10. 新 SDN Client / 新工具开发规范
 
@@ -353,7 +354,7 @@ MCP tool 函数 (app/tools/*.py)
 ### 10.2 接入一个全新类型的控制器
 
 - 优先复用 `SDNClient`：鉴权差异用 `auth_type` 三选一覆盖；登录契约差异**只重写 `get_token()`**。
-- 确需新 client 类时（如另一种控制协议）：照 `app/sdn/` 建包（`client.py` + `models.py` + `exceptions.py`），复用 `app/common/http.py` 的 `HttpClient`，在 `server.py` lifespan 中增配一个上下文 key，tools 从 lifespan 取用。**禁止**绕过 `HttpClient` 直接用 `httpx`（会丢掉统一重试/超时/可测试性）。
+- 确需新 client 类时（如另一种控制协议）：照 `app/sdn/` 建包（`client.py` + `models.py` + `exceptions.py`），复用 `app/common/http.py` 的 `HttpClient`，接入进程级生命周期：在 `server.py::_SharedClients` holder 增配一个字段，构造/`initialize()`/关闭归进程级入口 `_run_process`（与 §5 一致），lifespan 只增配一个只读上下文 key，tools 从 lifespan 取用。**禁止**绕过 `HttpClient` 直接用 `httpx`（会丢掉统一重试/超时/可测试性）。
 
 ### 10.3 硬性规则清单（DON'T）
 

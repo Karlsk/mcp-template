@@ -24,6 +24,7 @@ identifiers. Do not forward these logs to a channel the model can read.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -78,6 +79,10 @@ class Neo4jClient:
         self._config = config or Neo4jClientConfig()
         self._driver: AsyncDriver | None = None
         self._closed = False
+        # Guards lazy driver creation: one client instance is shared by the
+        # whole process (every MCP session), so concurrent first queries must
+        # not build two drivers.
+        self._driver_lock = asyncio.Lock()
 
     @property
     def configured(self) -> bool:
@@ -93,17 +98,21 @@ class Neo4jClient:
     async def _get_driver(self) -> AsyncDriver:
         """Lazily create (or return the injected) driver.
 
-        Not thread-hostile: one client instance is owned by one MCP session.
-        Lazy creation means a configured-but-down graph cannot break lifespan.
+        Double-checked under ``_driver_lock``: one client instance is shared
+        process-wide by every MCP session, so concurrent first queries must
+        not construct two drivers. Lazy creation means a configured-but-down
+        graph cannot break startup.
         """
         if self._config.driver is not None:
             return self._config.driver
         if self._driver is None:
-            self._driver = AsyncGraphDatabase.driver(
-                self._config.uri,
-                auth=(self._config.username, self._config.password),
-                max_transaction_retry_time=self._config.max_transaction_retry_time,
-            )
+            async with self._driver_lock:
+                if self._driver is None:
+                    self._driver = AsyncGraphDatabase.driver(
+                        self._config.uri,
+                        auth=(self._config.username, self._config.password),
+                        max_transaction_retry_time=self._config.max_transaction_retry_time,
+                    )
         return self._driver
 
     async def verify_connectivity(self) -> None:

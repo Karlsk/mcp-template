@@ -30,7 +30,13 @@ def make_settings() -> Settings:
     return Settings(sdn=make_sdn_settings(""))
 
 
-async def test_lifespan_probes_graph_and_closes_both_clients() -> None:
+async def test_lifespan_shares_clients_across_sessions() -> None:
+    """Shared semantics: consecutive sessions reuse the SAME clients.
+
+    initialize/probe happen exactly once for the whole process, both sessions
+    receive the same client objects, and exiting a session closes NOTHING
+    (ownership belongs to the process-level holder).
+    """
     settings = make_settings()
     events: list[str] = []
     graph = FakeGraphClient()
@@ -48,13 +54,18 @@ async def test_lifespan_probes_graph_and_closes_both_clients() -> None:
             settings, transport=httpx.MockTransport(lambda r: httpx.Response(200))
         )
 
-    lifespan = server._make_lifespan(sdn_factory, lambda: graph)
+    holder = server._SharedClients()
+    lifespan = server._make_lifespan(sdn_factory, lambda: graph, holder)
     async with lifespan(None) as context:  # type: ignore[arg-type]
-        assert "sdn_client" in context
+        first_sdn = context["sdn_client"]
         assert context["graph_client"] is graph
         assert graph.events == ["probe"]
-    assert events == ["sdn_initialize", "sdn_aclose"]
-    assert graph.events == ["probe", "aclose"]
+    async with lifespan(None) as context:  # type: ignore[arg-type]
+        assert context["sdn_client"] is first_sdn
+        assert context["graph_client"] is graph
+    # initialize/probe ran once; session exit triggered NO aclose events.
+    assert events == ["sdn_initialize"]
+    assert graph.events == ["probe"]
 
 
 async def test_default_graph_client_factory_builds_graph_client() -> None:

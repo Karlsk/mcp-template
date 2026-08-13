@@ -9,11 +9,16 @@ from app.settings import Settings
 
 
 class _FakeMCP:
+    """Async runner stubs: main() drives the server via ``_run_process`` now."""
+
     def __init__(self, recorder: dict[str, object]) -> None:
         self._recorder = recorder
 
-    def run(self, transport: str) -> None:
-        self._recorder["transport"] = transport
+    async def run_streamable_http_async(self) -> None:
+        self._recorder["transport"] = "streamable-http"
+
+    async def run_stdio_async(self) -> None:
+        self._recorder["transport"] = "stdio"
 
 
 def test_main_default_transport_is_streamable_http(

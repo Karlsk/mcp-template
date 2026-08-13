@@ -68,7 +68,14 @@ LOGIN_FAILURE_COOLDOWN = 5.0
 
 
 class SDNClient:
-    """Async client for an SDN controller REST API."""
+    """Async client for an SDN controller REST API.
+
+    One instance is shared by the whole process and reused by every MCP
+    session: it is built and initialized exactly once at process startup
+    (``initialize()``) and closed once at shutdown. The token-refresh
+    machinery (lock + generation counter + negative cache) is therefore
+    exercised concurrently by many sessions and must never be re-initialized.
+    """
 
     def __init__(
         self,
@@ -191,8 +198,10 @@ class SDNClient:
 
         basic mode logs in here (fail-fast at startup if the controller is
         unreachable or rejects credentials). no-auth/bearer are no-ops — their
-        auth is fully configured at construction. The MCP lifespan calls this
-        once before serving any request.
+        auth is fully configured at construction. The process entrypoint
+        (``server._run_process``) calls this exactly ONCE at startup, before
+        any session is served; it is NOT idempotent and must not run twice
+        (the process-level ``_SharedClients`` holder guarantees that).
         """
         if self._auth_mode == "basic" and self.configured:
             # _refresh_gen starts at 0; passing it forces the first login (no
